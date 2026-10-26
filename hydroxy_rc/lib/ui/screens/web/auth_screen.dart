@@ -113,7 +113,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Icon(
-                    Icons.cloud_download_rounded,
+                    Icons.image_not_supported_outlined,
                     size: 56,
                     color: colors.accentGreenColor,
                   ),

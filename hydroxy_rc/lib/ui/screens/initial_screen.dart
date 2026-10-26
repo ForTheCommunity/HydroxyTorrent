@@ -114,7 +114,7 @@ class _InitialScreenState extends State<InitialScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Icon(
-                  Icons.cloud_download_rounded,
+                  Icons.image_not_supported_outlined,
                   size: 80,
                   color: theme.colorScheme.primary,
                 ),
@@ -203,7 +203,7 @@ class _InitialScreenState extends State<InitialScreen> {
             shape: BoxShape.circle,
           ),
           child: Icon(
-            Icons.cloud_download_rounded,
+            Icons.image_not_supported_outlined,
             size: 48,
             color: theme.colorScheme.primary,
           ),
