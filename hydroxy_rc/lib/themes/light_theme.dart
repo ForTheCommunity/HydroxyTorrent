@@ -63,7 +63,7 @@ class LightTheme extends AppTheme {
   @override
   Color get sidebarBadgeBackgroundColor => const Color(0xFFF3F4F6);
   @override
-  Color get sidebarSelectedBadgeBackgroundColor => const Color(0xFF059669).withOpacity(0.15);
+  Color get sidebarSelectedBadgeBackgroundColor => const Color.fromRGBO(5, 150, 105, 0.15);
   @override
   Color get sidebarBadgeTextColor => const Color(0xFF6B7280);
   @override
@@ -87,7 +87,7 @@ class LightTheme extends AppTheme {
   @override
   Color get searchBarIconColor => const Color(0xFF6B7280);
   @override
-  Color get searchBarRegexActiveBackgroundColor => const Color(0xFF059669).withOpacity(0.15);
+  Color get searchBarRegexActiveBackgroundColor => const Color.fromRGBO(5, 150, 105, 0.15);
   @override
   Color get searchBarRegexActiveTextColor => const Color(0xFF059669);
   @override

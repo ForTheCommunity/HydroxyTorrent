@@ -63,7 +63,7 @@ class NordTheme extends AppTheme {
   @override
   Color get sidebarBadgeBackgroundColor => const Color(0xFF3B4252);
   @override
-  Color get sidebarSelectedBadgeBackgroundColor => const Color(0xFF88C0D0).withOpacity(0.25);
+  Color get sidebarSelectedBadgeBackgroundColor => const Color.fromRGBO(136, 192, 208, 0.25);
   @override
   Color get sidebarBadgeTextColor => const Color(0xFFD8DEE9);
   @override
@@ -87,7 +87,7 @@ class NordTheme extends AppTheme {
   @override
   Color get searchBarIconColor => const Color(0xFF81A1C1);
   @override
-  Color get searchBarRegexActiveBackgroundColor => const Color(0xFF88C0D0).withOpacity(0.2);
+  Color get searchBarRegexActiveBackgroundColor => const Color.fromRGBO(136, 192, 208, 0.2);
   @override
   Color get searchBarRegexActiveTextColor => const Color(0xFF88C0D0);
   @override
@@ -164,19 +164,19 @@ class NordTheme extends AppTheme {
   Color get dataValueTextColor => const Color(0xFFECEFF4);
 
   @override
-  Color get badgeSuccessBackgroundColor => const Color(0xFFA3BE8C).withOpacity(0.2);
+  Color get badgeSuccessBackgroundColor => const Color.fromRGBO(163, 190, 140, 0.2);
   @override
   Color get badgeSuccessTextColor => const Color(0xFFA3BE8C);
   @override
-  Color get badgeWarningBackgroundColor => const Color(0xFFEBCB8B).withOpacity(0.2);
+  Color get badgeWarningBackgroundColor => const Color.fromRGBO(235, 203, 139, 0.2);
   @override
   Color get badgeWarningTextColor => const Color(0xFFEBCB8B);
   @override
-  Color get badgeErrorBackgroundColor => const Color(0xFFBF616A).withOpacity(0.2);
+  Color get badgeErrorBackgroundColor => const Color.fromRGBO(191, 97, 106, 0.2);
   @override
   Color get badgeErrorTextColor => const Color(0xFFBF616A);
   @override
-  Color get badgeInfoBackgroundColor => const Color(0xFF81A1C1).withOpacity(0.2);
+  Color get badgeInfoBackgroundColor => const Color.fromRGBO(129, 161, 193, 0.2);
   @override
   Color get badgeInfoTextColor => const Color(0xFF88C0D0);
 

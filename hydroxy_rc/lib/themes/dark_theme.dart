@@ -63,7 +63,7 @@ class DarkTheme extends AppTheme {
   @override
   Color get sidebarBadgeBackgroundColor => const Color(0xFF2D2D2D);
   @override
-  Color get sidebarSelectedBadgeBackgroundColor => const Color(0xFF00FF66).withOpacity(0.2);
+  Color get sidebarSelectedBadgeBackgroundColor => const Color.fromRGBO(0, 255, 102, 0.2);
   @override
   Color get sidebarBadgeTextColor => Colors.white54;
   @override
@@ -87,7 +87,7 @@ class DarkTheme extends AppTheme {
   @override
   Color get searchBarIconColor => Colors.white38;
   @override
-  Color get searchBarRegexActiveBackgroundColor => const Color(0xFF00FF66).withOpacity(0.18);
+  Color get searchBarRegexActiveBackgroundColor => const Color.fromRGBO(0, 255, 102, 0.18);
   @override
   Color get searchBarRegexActiveTextColor => const Color(0xFF00FF66);
   @override
@@ -164,19 +164,19 @@ class DarkTheme extends AppTheme {
   Color get dataValueTextColor => Colors.white;
 
   @override
-  Color get badgeSuccessBackgroundColor => const Color(0xFF00FF66).withOpacity(0.15);
+  Color get badgeSuccessBackgroundColor => const Color.fromRGBO(0, 255, 102, 0.15);
   @override
   Color get badgeSuccessTextColor => const Color(0xFF00FF66);
   @override
-  Color get badgeWarningBackgroundColor => Colors.amberAccent.withOpacity(0.15);
+  Color get badgeWarningBackgroundColor => const Color.fromRGBO(255, 215, 64, 0.15);
   @override
   Color get badgeWarningTextColor => Colors.amberAccent;
   @override
-  Color get badgeErrorBackgroundColor => Colors.redAccent.withOpacity(0.15);
+  Color get badgeErrorBackgroundColor => const Color.fromRGBO(255, 82, 82, 0.15);
   @override
   Color get badgeErrorTextColor => Colors.redAccent;
   @override
-  Color get badgeInfoBackgroundColor => Colors.lightBlueAccent.withOpacity(0.15);
+  Color get badgeInfoBackgroundColor => const Color.fromRGBO(64, 196, 255, 0.15);
   @override
   Color get badgeInfoTextColor => Colors.lightBlueAccent;
 

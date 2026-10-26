@@ -137,6 +137,15 @@ abstract class AppTheme {
   Color get accentBlueColor;
   Color get accentPurpleColor;
 
+  // Convenience Aliases & Fallbacks
+  Color get tableRowOddColor => tableAlternatingRowBackgroundColor;
+  Color get sidebarTextColor => sidebarItemTextColor;
+  Color get sidebarSelectedBackgroundColor => sidebarSelectedItemBackgroundColor;
+  Color get sidebarSelectedTextColor => sidebarSelectedItemTextColor;
+  Color get detailsPanelTabSelectedBorderColor => tabBarActiveIndicatorColor;
+  Color get detailsPanelTabSelectedTextColor => tabBarActiveTextColor;
+  Color get detailsPanelTabUnselectedTextColor => tabBarInactiveTextColor;
+
   // Material ThemeData integration
   ThemeData toThemeData() {
     return ThemeData(
@@ -171,6 +180,22 @@ abstract class AppTheme {
           color: tooltipTextColor,
           fontSize: 11,
         ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: snackBarBackgroundColor,
+        contentTextStyle: TextStyle(
+          color: snackBarTextColor,
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+        ),
+        actionTextColor: accentBlueColor,
+        disabledActionTextColor: tableSecondaryTextColor,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(color: popupMenuBorderColor, width: 1.0),
+        ),
+        elevation: 8,
       ),
     );
   }

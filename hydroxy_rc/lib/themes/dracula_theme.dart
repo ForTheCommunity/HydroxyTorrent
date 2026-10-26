@@ -63,13 +63,13 @@ class DraculaTheme extends AppTheme {
   @override
   Color get sidebarBadgeBackgroundColor => const Color(0xFF44475A);
   @override
-  Color get sidebarSelectedBadgeBackgroundColor => const Color(0xFF50FA7B).withOpacity(0.25);
+  Color get sidebarSelectedBadgeBackgroundColor => const Color.fromRGBO(80, 250, 123, 0.25);
   @override
   Color get sidebarBadgeTextColor => const Color(0xFFF8F8F2);
   @override
   Color get sidebarSelectedBadgeTextColor => const Color(0xFF50FA7B);
   @override
-  Color get sidebarTreeLineColor => const Color(0xFF6272A4).withOpacity(0.4);
+  Color get sidebarTreeLineColor => const Color.fromRGBO(98, 114, 164, 0.4);
 
   // Search Bar
   @override
@@ -87,7 +87,7 @@ class DraculaTheme extends AppTheme {
   @override
   Color get searchBarIconColor => const Color(0xFFBD93F9);
   @override
-  Color get searchBarRegexActiveBackgroundColor => const Color(0xFFBD93F9).withOpacity(0.25);
+  Color get searchBarRegexActiveBackgroundColor => const Color.fromRGBO(189, 147, 249, 0.25);
   @override
   Color get searchBarRegexActiveTextColor => const Color(0xFFBD93F9);
   @override
@@ -164,19 +164,19 @@ class DraculaTheme extends AppTheme {
   Color get dataValueTextColor => const Color(0xFFF8F8F2);
 
   @override
-  Color get badgeSuccessBackgroundColor => const Color(0xFF50FA7B).withOpacity(0.2);
+  Color get badgeSuccessBackgroundColor => const Color.fromRGBO(80, 250, 123, 0.2);
   @override
   Color get badgeSuccessTextColor => const Color(0xFF50FA7B);
   @override
-  Color get badgeWarningBackgroundColor => const Color(0xFFF1FA8C).withOpacity(0.2);
+  Color get badgeWarningBackgroundColor => const Color.fromRGBO(241, 250, 140, 0.2);
   @override
   Color get badgeWarningTextColor => const Color(0xFFF1FA8C);
   @override
-  Color get badgeErrorBackgroundColor => const Color(0xFFFF5555).withOpacity(0.2);
+  Color get badgeErrorBackgroundColor => const Color.fromRGBO(255, 85, 85, 0.2);
   @override
   Color get badgeErrorTextColor => const Color(0xFFFF5555);
   @override
-  Color get badgeInfoBackgroundColor => const Color(0xFF8BE9FD).withOpacity(0.2);
+  Color get badgeInfoBackgroundColor => const Color.fromRGBO(139, 233, 253, 0.2);
   @override
   Color get badgeInfoTextColor => const Color(0xFF8BE9FD);
 

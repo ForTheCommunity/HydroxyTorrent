@@ -63,7 +63,7 @@ class MatrixTheme extends AppTheme {
   @override
   Color get sidebarBadgeBackgroundColor => const Color(0xFF002B0E);
   @override
-  Color get sidebarSelectedBadgeBackgroundColor => const Color(0xFF00FF41).withOpacity(0.25);
+  Color get sidebarSelectedBadgeBackgroundColor => const Color.fromRGBO(0, 255, 65, 0.25);
   @override
   Color get sidebarBadgeTextColor => const Color(0xFF00DD33);
   @override
@@ -87,7 +87,7 @@ class MatrixTheme extends AppTheme {
   @override
   Color get searchBarIconColor => const Color(0xFF00AA22);
   @override
-  Color get searchBarRegexActiveBackgroundColor => const Color(0xFF00FF41).withOpacity(0.2);
+  Color get searchBarRegexActiveBackgroundColor => const Color.fromRGBO(0, 255, 65, 0.2);
   @override
   Color get searchBarRegexActiveTextColor => const Color(0xFF00FF41);
   @override
@@ -164,19 +164,19 @@ class MatrixTheme extends AppTheme {
   Color get dataValueTextColor => const Color(0xFF00FF41);
 
   @override
-  Color get badgeSuccessBackgroundColor => const Color(0xFF00FF41).withOpacity(0.18);
+  Color get badgeSuccessBackgroundColor => const Color.fromRGBO(0, 255, 65, 0.18);
   @override
   Color get badgeSuccessTextColor => const Color(0xFF00FF41);
   @override
-  Color get badgeWarningBackgroundColor => const Color(0xFFDDDD00).withOpacity(0.18);
+  Color get badgeWarningBackgroundColor => const Color.fromRGBO(221, 221, 0, 0.18);
   @override
   Color get badgeWarningTextColor => const Color(0xFFDDDD00);
   @override
-  Color get badgeErrorBackgroundColor => const Color(0xFFFF2222).withOpacity(0.2);
+  Color get badgeErrorBackgroundColor => const Color.fromRGBO(255, 34, 34, 0.2);
   @override
   Color get badgeErrorTextColor => const Color(0xFFFF3333);
   @override
-  Color get badgeInfoBackgroundColor => const Color(0xFF00DDFF).withOpacity(0.18);
+  Color get badgeInfoBackgroundColor => const Color.fromRGBO(0, 221, 255, 0.18);
   @override
   Color get badgeInfoTextColor => const Color(0xFF00DDFF);
 
