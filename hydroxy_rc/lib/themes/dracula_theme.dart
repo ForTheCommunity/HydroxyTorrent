@@ -107,7 +107,9 @@ class DraculaTheme extends AppTheme {
   @override
   Color get tableRowSelectedColor => const Color(0xFF44475A);
   @override
-  Color get tableDividerColor => const Color(0xFF44475A);
+  Color get tableDividerColor => const Color(0xFF4D5066);
+  @override
+  Color get tableColumnSeparatorColor => const Color(0xFF6272A4);
   @override
   Color get tablePrimaryTextColor => const Color(0xFFF8F8F2);
   @override

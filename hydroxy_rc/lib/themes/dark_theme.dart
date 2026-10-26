@@ -107,7 +107,9 @@ class DarkTheme extends AppTheme {
   @override
   Color get tableRowSelectedColor => const Color(0xFF094771);
   @override
-  Color get tableDividerColor => const Color(0xFF2D2D2D);
+  Color get tableDividerColor => const Color(0xFF383A40);
+  @override
+  Color get tableColumnSeparatorColor => const Color(0xFF555964);
   @override
   Color get tablePrimaryTextColor => Colors.white;
   @override

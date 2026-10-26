@@ -107,7 +107,9 @@ class NordTheme extends AppTheme {
   @override
   Color get tableRowSelectedColor => const Color(0xFF434C5E);
   @override
-  Color get tableDividerColor => const Color(0xFF3B4252);
+  Color get tableDividerColor => const Color(0xFF434C5E);
+  @override
+  Color get tableColumnSeparatorColor => const Color(0xFF5E697F);
   @override
   Color get tablePrimaryTextColor => const Color(0xFFECEFF4);
   @override

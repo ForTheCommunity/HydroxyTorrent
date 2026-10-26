@@ -467,7 +467,7 @@ class TorrentDataTable extends StatelessWidget {
               width: 8,
               height: double.infinity,
               alignment: Alignment.center,
-              child: Container(width: 1, height: 16, color: colors.tableDividerColor),
+              child: Container(width: 1.5, height: 16, color: colors.tableColumnSeparatorColor),
             ),
           ),
         ),

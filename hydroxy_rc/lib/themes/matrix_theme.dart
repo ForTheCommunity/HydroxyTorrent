@@ -107,7 +107,9 @@ class MatrixTheme extends AppTheme {
   @override
   Color get tableRowSelectedColor => const Color(0xFF004415);
   @override
-  Color get tableDividerColor => const Color(0xFF002B0E);
+  Color get tableDividerColor => const Color(0xFF004D12);
+  @override
+  Color get tableColumnSeparatorColor => const Color(0xFF008F28);
   @override
   Color get tablePrimaryTextColor => const Color(0xFF00FF41);
   @override

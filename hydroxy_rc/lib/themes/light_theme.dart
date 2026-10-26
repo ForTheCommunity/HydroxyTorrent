@@ -107,7 +107,9 @@ class LightTheme extends AppTheme {
   @override
   Color get tableRowSelectedColor => const Color(0xFFE0E7FF);
   @override
-  Color get tableDividerColor => const Color(0xFFE5E7EB);
+  Color get tableDividerColor => const Color(0xFFD1D5DB);
+  @override
+  Color get tableColumnSeparatorColor => const Color(0xFF94A3B8);
   @override
   Color get tablePrimaryTextColor => const Color(0xFF111827);
   @override

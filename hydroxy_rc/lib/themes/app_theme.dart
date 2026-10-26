@@ -62,6 +62,7 @@ abstract class AppTheme {
   Color get tableRowHoverColor;
   Color get tableRowSelectedColor;
   Color get tableDividerColor;
+  Color get tableColumnSeparatorColor;
   Color get tablePrimaryTextColor;
   Color get tableSecondaryTextColor;
   Color get tableAccentTextColor;
