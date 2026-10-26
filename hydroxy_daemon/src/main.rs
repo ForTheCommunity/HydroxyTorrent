@@ -35,6 +35,7 @@ fn main() {
         if let Ok(cfg_path) = HydroxyConfig::config_file_path() {
             println!("Config file: {}", cfg_path.display());
         }
+        println!("Peer Listen Port: {}", config.network_config.listen_port);
         println!("RPC Port: {}", config.remote_config.listen_port);
         if config.remote_config.web_ui_enabled {
             let web_ui_url = format!(
@@ -183,6 +184,7 @@ async fn run_daemon() {
         info!("============================================================");
     }
 
+    info!("Peer Listen Port: {}", config.network_config.listen_port);
     info!("Watch Dir: {}", config.storage_config.watch_directory);
     info!("Download Dir: {}", config.storage_config.download_directory);
 

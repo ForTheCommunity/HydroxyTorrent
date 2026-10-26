@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use crate::{
     control::{TorrentCommand, TorrentControlRegistry},
     errors::EngineError,
+    peer_listener::{InboundConnection, InboundTorrentRegistry},
     peer_worker::{PeerState, PeerWorker},
     piece_allocator::PieceAllocator,
     piece_assembler::PieceAssembler,
@@ -36,6 +37,8 @@ pub struct TorrentTask {
     pub category: String,
     pub stats_registry: Arc<StatsRegistry>,
     pub control_registry: Arc<TorrentControlRegistry>,
+    pub listen_port: u16,
+    pub inbound_registry: Arc<InboundTorrentRegistry>,
 }
 
 impl TorrentTask {
@@ -159,9 +162,10 @@ impl TorrentTask {
         piece_allocator.lock().await.sequential = is_sequential;
         self.stats_registry.set_sequential(&info_hash_sha1, is_sequential);
 
-        if piece_allocator.lock().await.all_complete() {
-            info!("All pieces already downloaded — torrent complete");
-            self.stats_registry.set_status(&info_hash_sha1, Some("completed".to_string()));
+        let all_done = piece_allocator.lock().await.all_complete();
+        if all_done {
+            info!("All pieces already downloaded — torrent complete (seeding)");
+            self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
         } else if is_paused {
             self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
         }
@@ -171,6 +175,12 @@ impl TorrentTask {
 
         // Generate one consistent peer_id for this entire torrent session
         let session_peer_id = get_peer_id();
+
+        // Register with engine-wide inbound listener registry so incoming peers can connect
+        let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundConnection>(32);
+        self.inbound_registry
+            .register(info_hash, session_peer_id, inbound_tx)
+            .await;
 
         // Track connected peers to avoid spawning duplicate workers
         let connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>> =
@@ -197,16 +207,18 @@ impl TorrentTask {
         };
 
         // Announce to all trackers concurrently in parallel, streaming peers as each tracker responds
-        if !is_paused && !piece_allocator.lock().await.all_complete() && !trackers.is_empty() {
+        if !is_paused && !trackers.is_empty() {
             let init_trackers = trackers.clone();
             let init_stats = Arc::clone(&self.stats_registry);
             let init_hash_sha1 = info_hash_sha1.clone();
             let init_peer_tx = new_peer_tx.clone();
+            let port = self.listen_port;
             tokio::spawn(async move {
                 Self::announce_to_trackers_stream(
                     &init_trackers,
                     &info_hash,
                     session_peer_id,
+                    port,
                     initial_downloaded,
                     0,
                     initial_remaining,
@@ -225,10 +237,14 @@ impl TorrentTask {
         let re_announce_stats = Arc::clone(&self.stats_registry);
         let re_announce_allocator = Arc::clone(&piece_allocator);
         let re_announce_peer_tx = new_peer_tx.clone();
+        let re_announce_port = self.listen_port;
+        let initially_complete = all_done;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
             interval.tick().await; // skip the first immediate tick
+
+            let mut completed_sent = initially_complete;
 
             loop {
                 interval.tick().await;
@@ -242,31 +258,29 @@ impl TorrentTask {
                     )
                 };
 
-                if is_complete {
-                    info!("All pieces complete — sending completed announce & stopping re-announce");
-                    let _ = Self::announce_to_trackers(
-                        &re_announce_trackers,
-                        &re_announce_info_hash,
-                        session_peer_id,
-                        downloaded,
-                        0,
-                        0,
-                        Some(TrackerEvents::Completed),
-                        Some((&re_announce_stats, &re_announce_info_hash_sha1)),
-                    )
-                    .await;
-                    break;
-                }
+                let uploaded = re_announce_stats
+                    .snapshot_torrent(&re_announce_info_hash_sha1)
+                    .map(|s| s.uploaded_bytes)
+                    .unwrap_or(0);
 
-                info!("Re-announcing to trackers for fresh peers...");
+                let event = if is_complete && !completed_sent {
+                    completed_sent = true;
+                    info!("All pieces complete — sending completed announce to trackers");
+                    Some(TrackerEvents::Completed)
+                } else {
+                    None
+                };
+
+                info!("Re-announcing to trackers (seeding={}) for fresh peers...", is_complete);
                 Self::announce_to_trackers_stream(
                     &re_announce_trackers,
                     &re_announce_info_hash,
                     session_peer_id,
+                    re_announce_port,
                     downloaded,
-                    0,
+                    uploaded,
                     remaining,
-                    None,
+                    event,
                     Some((&re_announce_stats, &re_announce_info_hash_sha1)),
                     &re_announce_peer_tx,
                 )
@@ -290,6 +304,7 @@ impl TorrentTask {
                             info!("Removing torrent task: {}", info_hash_sha1);
                             worker_set.shutdown().await;
                             connected_peers.lock().await.clear();
+                            self.inbound_registry.unregister(&info_hash).await;
                             break;
                         }
                         TorrentCommand::Pause => {
@@ -301,6 +316,32 @@ impl TorrentTask {
                             let mut state = torrent_state.lock().await;
                             state.paused = 1;
                             let _ = TorrentState::save_state(state.clone()).await;
+
+                            if !trackers.is_empty() {
+                                let (dl, rem) = {
+                                    let alloc = piece_allocator.lock().await;
+                                    (
+                                        alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                        alloc.remaining_bytes(piece_length, total_torrent_size),
+                                    )
+                                };
+                                let pause_trackers = trackers.clone();
+                                let pause_port = self.listen_port;
+                                tokio::spawn(async move {
+                                    let _ = Self::announce_to_trackers(
+                                        &pause_trackers,
+                                        &info_hash,
+                                        session_peer_id,
+                                        pause_port,
+                                        dl,
+                                        0,
+                                        rem,
+                                        Some(TrackerEvents::Stopped),
+                                        None,
+                                    )
+                                    .await;
+                                });
+                            }
                         }
                         TorrentCommand::SetSequential(val) => {
                             info!("Setting sequential download = {} for torrent {}", val, info_hash_sha1);
@@ -319,60 +360,63 @@ impl TorrentTask {
 
                             let all_done = piece_allocator.lock().await.all_complete();
                             if all_done {
-                                self.stats_registry.set_status(&info_hash_sha1, Some("completed".to_string()));
+                                self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
                             } else {
                                 self.stats_registry.set_status(&info_hash_sha1, None);
-                                while let Some(peer) = peer_pool.pop_front() {
-                                    if !Self::spawn_worker_if_new(
-                                        &mut worker_set,
-                                        &connected_peers,
-                                        peer,
-                                        info_hash,
-                                        session_peer_id,
-                                        total_pieces,
-                                        piece_length,
-                                        total_torrent_size,
-                                        &piece_hashes,
-                                        &piece_allocator,
-                                        &file_map,
-                                        &torrent_state,
-                                        &self.stats_registry,
-                                        have_tx.clone(),
-                                    )
-                                    .await
-                                    {
-                                        peer_pool.push_front(peer);
-                                        break;
-                                    }
-                                }
+                            }
 
-                                if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
-                                    let (dl, rem) = {
-                                        let alloc = piece_allocator.lock().await;
-                                        (
-                                            alloc.downloaded_bytes(piece_length, total_torrent_size),
-                                            alloc.remaining_bytes(piece_length, total_torrent_size),
-                                        )
-                                    };
-                                    let resume_trackers = trackers.clone();
-                                    let resume_stats = Arc::clone(&self.stats_registry);
-                                    let resume_hash_sha1 = info_hash_sha1.clone();
-                                    let resume_peer_tx = new_peer_tx.clone();
-                                    tokio::spawn(async move {
-                                        Self::announce_to_trackers_stream(
-                                            &resume_trackers,
-                                            &info_hash,
-                                            session_peer_id,
-                                            dl,
-                                            0,
-                                            rem,
-                                            None,
-                                            Some((&resume_stats, &resume_hash_sha1)),
-                                            &resume_peer_tx,
-                                        )
-                                        .await;
-                                    });
+                            while let Some(peer) = peer_pool.pop_front() {
+                                if !Self::spawn_worker_if_new(
+                                    &mut worker_set,
+                                    &connected_peers,
+                                    peer,
+                                    info_hash,
+                                    session_peer_id,
+                                    total_pieces,
+                                    piece_length,
+                                    total_torrent_size,
+                                    &piece_hashes,
+                                    &piece_allocator,
+                                    &file_map,
+                                    &torrent_state,
+                                    &self.stats_registry,
+                                    have_tx.clone(),
+                                )
+                                .await
+                                {
+                                    peer_pool.push_front(peer);
+                                    break;
                                 }
+                            }
+
+                            if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
+                                let (dl, rem) = {
+                                    let alloc = piece_allocator.lock().await;
+                                    (
+                                        alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                        alloc.remaining_bytes(piece_length, total_torrent_size),
+                                    )
+                                };
+                                let resume_trackers = trackers.clone();
+                                let resume_stats = Arc::clone(&self.stats_registry);
+                                let resume_hash_sha1 = info_hash_sha1.clone();
+                                let resume_peer_tx = new_peer_tx.clone();
+                                let resume_port = self.listen_port;
+                                tokio::spawn(async move {
+                                    Self::announce_to_trackers_stream(
+                                        &resume_trackers,
+                                        &info_hash,
+                                        session_peer_id,
+                                        resume_port,
+                                        dl,
+                                        0,
+                                        rem,
+                                        None,
+                                        Some((&resume_stats, &resume_hash_sha1)),
+                                        &resume_peer_tx,
+                                    )
+                                    .await;
+                                });
                             }
                         }
                         TorrentCommand::Recheck => {
@@ -406,11 +450,14 @@ impl TorrentTask {
                             );
 
                             if recheck.completed_pieces == total_pieces {
-                                self.stats_registry.set_status(&info_hash_sha1, Some("completed".to_string()));
+                                self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
                             } else if is_paused {
                                 self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
                             } else {
                                 self.stats_registry.set_status(&info_hash_sha1, None);
+                            }
+
+                            if !is_paused {
                                 while let Some(peer) = peer_pool.pop_front() {
                                     if !Self::spawn_worker_if_new(
                                         &mut worker_set,
@@ -447,11 +494,13 @@ impl TorrentTask {
                                     let resume_stats = Arc::clone(&self.stats_registry);
                                     let resume_hash_sha1 = info_hash_sha1.clone();
                                     let resume_peer_tx = new_peer_tx.clone();
+                                    let resume_port = self.listen_port;
                                     tokio::spawn(async move {
                                         Self::announce_to_trackers_stream(
                                             &resume_trackers,
                                             &info_hash,
                                             session_peer_id,
+                                            resume_port,
                                             dl,
                                             0,
                                             rem,
@@ -473,18 +522,25 @@ impl TorrentTask {
                                     alloc.remaining_bytes(piece_length, total_torrent_size),
                                 )
                             };
+                            let uploaded = self.stats_registry
+                                .snapshot_torrent(&info_hash_sha1)
+                                .map(|s| s.uploaded_bytes)
+                                .unwrap_or(0);
+
                             if !trackers.is_empty() {
                                 let re_trackers = trackers.clone();
                                 let re_stats = Arc::clone(&self.stats_registry);
                                 let re_hash_sha1 = info_hash_sha1.clone();
                                 let re_peer_tx = new_peer_tx.clone();
+                                let re_port = self.listen_port;
                                 tokio::spawn(async move {
                                     Self::announce_to_trackers_stream(
                                         &re_trackers,
                                         &info_hash,
                                         session_peer_id,
+                                        re_port,
                                         downloaded,
-                                        0,
+                                        uploaded,
                                         remaining,
                                         None,
                                         Some((&re_stats, &re_hash_sha1)),
@@ -496,6 +552,28 @@ impl TorrentTask {
                         }
                     }
                 }
+                // Handle inbound connections from listening port
+                Some(inbound) = inbound_rx.recv() => {
+                    if !is_paused {
+                        Self::spawn_inbound_worker(
+                            &mut worker_set,
+                            &connected_peers,
+                            inbound,
+                            info_hash,
+                            session_peer_id,
+                            total_pieces,
+                            piece_length,
+                            total_torrent_size,
+                            &piece_hashes,
+                            &piece_allocator,
+                            &file_map,
+                            &torrent_state,
+                            &self.stats_registry,
+                            have_tx.clone(),
+                        )
+                        .await;
+                    }
+                }
                 // Handle newly discovered peers from re-announce
                 Some(new_peers) = new_peer_rx.recv() => {
                     for peer in new_peers {
@@ -505,7 +583,7 @@ impl TorrentTask {
                         }
                     }
 
-                    if !is_paused && !piece_allocator.lock().await.all_complete() {
+                    if !is_paused {
                         while let Some(peer) = peer_pool.pop_front() {
                             if !Self::spawn_worker_if_new(
                                 &mut worker_set,
@@ -543,7 +621,7 @@ impl TorrentTask {
                                 warn!("Worker {}:{} finished with error: {}", ip, port, e);
                             }
 
-                            if !is_paused && !piece_allocator.lock().await.all_complete() {
+                            if !is_paused {
                                 while let Some(next_peer) = peer_pool.pop_front() {
                                     if Self::spawn_worker_if_new(
                                         &mut worker_set,
@@ -575,13 +653,17 @@ impl TorrentTask {
 
                     // Check if all pieces are complete
                     if piece_allocator.lock().await.all_complete() {
-                        info!("All pieces downloaded successfully!");
-                        self.stats_registry.set_status(&info_hash_sha1, Some("completed".to_string()));
+                        let current_status = self.stats_registry.snapshot_torrent(&info_hash_sha1).and_then(|s| s.custom_status);
+                        if current_status.as_deref() != Some("seeding") {
+                            info!("All pieces complete — torrent is seeding");
+                            self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
+                        }
                     }
                 }
             }
         }
 
+        self.inbound_registry.unregister(&info_hash).await;
         self.control_registry.unregister(&info_hash_sha1);
 
         let (final_downloaded, final_remaining, is_complete) = {
@@ -601,6 +683,7 @@ impl TorrentTask {
             &trackers,
             &info_hash,
             session_peer_id,
+            self.listen_port,
             final_downloaded,
             0,
             final_remaining,
@@ -617,6 +700,7 @@ impl TorrentTask {
         trackers: &[String],
         info_hash: &[u8; 20],
         peer_id: [u8; 20],
+        port: u16,
         downloaded: u64,
         uploaded: u64,
         remaining_size: u64,
@@ -629,6 +713,7 @@ impl TorrentTask {
             trackers,
             info_hash,
             peer_id,
+            port,
             downloaded,
             uploaded,
             remaining_size,
@@ -653,6 +738,7 @@ impl TorrentTask {
         trackers: &[String],
         info_hash: &[u8; 20],
         peer_id: [u8; 20],
+        port: u16,
         downloaded: u64,
         uploaded: u64,
         remaining_size: u64,
@@ -689,7 +775,7 @@ impl TorrentTask {
                     remaining_size: remaining_size as i64,
                     info_hash,
                     peer_id,
-                    port: "9060".into(),
+                    port: port.to_string(),
                     event,
                 };
 
@@ -748,6 +834,90 @@ impl TorrentTask {
         }
 
         while join_set.join_next().await.is_some() {}
+    }
+
+    // Spawn a worker for an inbound connection accepted on our peer listening port.
+    async fn spawn_inbound_worker(
+        worker_set: &mut JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)>,
+        connected_peers: &Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+        inbound: InboundConnection,
+        info_hash: [u8; 20],
+        session_peer_id: [u8; 20],
+        total_pieces: usize,
+        piece_length: u32,
+        total_torrent_size: u64,
+        piece_hashes: &Arc<Vec<u8>>,
+        piece_allocator: &Arc<Mutex<PieceAllocator>>,
+        file_map: &Arc<Vec<FileRegion>>,
+        torrent_state: &Arc<Mutex<TorrentState>>,
+        stats_registry: &Arc<StatsRegistry>,
+        have_tx: broadcast::Sender<u32>,
+    ) -> bool {
+        let key = (inbound.peer_ip, inbound.peer_port);
+        {
+            let mut connected = connected_peers.lock().await;
+            if connected.len() >= MAX_CONNECTED_PEERS_PER_TORRENT {
+                return false;
+            }
+            if !connected.insert(key) {
+                return false;
+            }
+        }
+
+        let piece_allocator = Arc::clone(piece_allocator);
+        let torrent_state = Arc::clone(torrent_state);
+        let file_map = Arc::clone(file_map);
+        let stats_registry = Arc::clone(stats_registry);
+        let piece_hashes = Arc::clone(piece_hashes);
+        let peer_ip = inbound.peer_ip;
+        let peer_port = inbound.peer_port;
+        let have_rx = have_tx.subscribe();
+        let stream = inbound.stream;
+        let remote_peer_id = inbound.remote_peer_id;
+
+        worker_set.spawn(async move {
+            let worker = PeerWorker {
+                ip_addr: IpAddr::from(peer_ip),
+                port: peer_port,
+                info_hash,
+                peer_id: session_peer_id,
+                peer_state: PeerState {
+                    am_choking: false,
+                    am_interested: false,
+                    peer_choking: true,
+                    peer_interested: false,
+                    bitfield: vec![0u8; (total_pieces + 7) / 8],
+                },
+                total_pieces,
+                piece_allocator,
+                piece_assembler: PieceAssembler::new(),
+                total_torrent_size,
+                piece_length,
+                piece_hashes,
+                file_map,
+                torrent_state,
+                pending_requests: 0,
+                current_piece: None,
+                requested_offset: 0,
+                stats_registry,
+                have_tx,
+                have_rx,
+            };
+
+            let result = worker.start_inbound(stream, remote_peer_id).await;
+            if let Err(ref e) = result {
+                warn!(
+                    "Inbound peer: {}:{}, error: {}",
+                    peer_ip,
+                    peer_port,
+                    e.to_string()
+                );
+            }
+
+            (peer_ip, peer_port, result)
+        });
+
+        true
     }
 
     // Spawn a worker for a peer only if we don't already have an active

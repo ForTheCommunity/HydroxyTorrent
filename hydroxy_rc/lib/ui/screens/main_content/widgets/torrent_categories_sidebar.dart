@@ -97,6 +97,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
         downloading++;
       } else if (st == 'seeding') {
         seeding++;
+        completed++;
       } else if (st == 'completed') {
         completed++;
       } else if (st == 'paused' || st == 'stopped') {
@@ -216,6 +217,15 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
                             widget.selectedFilter == 'status:downloading',
                         onTap: () =>
                             widget.onFilterSelected('status:downloading'),
+                        depth: 1,
+                      ),
+                      _buildItem(
+                        label: 'Seeding',
+                        icon: Icons.arrow_upward_rounded,
+                        iconColor: colors.uploadSpeedColor,
+                        count: statusCounts['seeding'] ?? 0,
+                        isSelected: widget.selectedFilter == 'status:seeding',
+                        onTap: () => widget.onFilterSelected('status:seeding'),
                         depth: 1,
                       ),
                       _buildItem(

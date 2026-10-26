@@ -221,7 +221,7 @@ pub async fn get_torrent_detail(
         let status = if let Some(ref s) = snap.custom_status {
             s.clone()
         } else if snap.total_pieces > 0 && snap.completed_pieces == snap.total_pieces {
-            "completed".to_string()
+            "seeding".to_string()
         } else {
             "downloading".to_string()
         };
@@ -546,7 +546,7 @@ fn snapshot_to_api_item(snap: TorrentStatsSnapshot) -> TorrentApiItem {
     let status = if let Some(ref s) = snap.custom_status {
         s.clone()
     } else if snap.total_pieces > 0 && snap.completed_pieces == snap.total_pieces {
-        "completed".to_string()
+        "seeding".to_string()
     } else {
         "downloading".to_string()
     };

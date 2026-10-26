@@ -52,13 +52,30 @@ pub struct PeerWorker {
 }
 
 impl PeerWorker {
-    pub async fn start(mut self) -> Result<(), EngineError> {
-        let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
+    pub async fn start(self) -> Result<(), EngineError> {
         let mut tcp_stream = TcpStream::connect(format!("{}:{}", self.ip_addr, self.port)).await?;
 
         let handshake = Handshake::new(self.info_hash, self.peer_id)
             .do_handshake(&mut tcp_stream)
             .await?;
+
+        self.run_with_stream(tcp_stream, handshake.peer_id).await
+    }
+
+    pub async fn start_inbound(
+        self,
+        tcp_stream: TcpStream,
+        remote_peer_id: [u8; 20],
+    ) -> Result<(), EngineError> {
+        self.run_with_stream(tcp_stream, remote_peer_id).await
+    }
+
+    async fn run_with_stream(
+        mut self,
+        mut tcp_stream: TcpStream,
+        remote_peer_id: [u8; 20],
+    ) -> Result<(), EngineError> {
+        let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
 
         // Send local bitfield immediately after handshake per BEP 0003
         let our_bitfield = self
@@ -84,7 +101,7 @@ impl PeerWorker {
             PeerMessage::Interested.write(&mut tcp_stream).await?;
         }
 
-        let client_name = parse_peer_id(&handshake.peer_id);
+        let client_name = parse_peer_id(&remote_peer_id);
 
         self.stats_registry.peer_connected(
             &info_hash_sha1,
@@ -266,6 +283,18 @@ impl PeerWorker {
                     progress,
                 );
 
+                let we_are_complete = {
+                    let alloc = self.piece_allocator.lock().await;
+                    alloc.all_complete()
+                };
+                if we_are_complete && progress >= 100.0 {
+                    info!(
+                        "Worker {}:{} completed all pieces (seeder) — disconnecting to free connection slot",
+                        self.ip_addr, self.port
+                    );
+                    return Ok(());
+                }
+
                 if !self.peer_state.am_interested {
                     let is_missing = {
                         let alloc = self.piece_allocator.lock().await;
@@ -298,6 +327,18 @@ impl PeerWorker {
                     self.port,
                     progress,
                 );
+
+                let we_are_complete = {
+                    let alloc = self.piece_allocator.lock().await;
+                    alloc.all_complete()
+                };
+                if we_are_complete && progress >= 100.0 {
+                    info!(
+                        "Worker {}:{} is also a seeder (100% complete) — disconnecting to free connection slot",
+                        self.ip_addr, self.port
+                    );
+                    return Ok(());
+                }
 
                 let has_useful = {
                     let piece_allocator = self.piece_allocator.lock().await;

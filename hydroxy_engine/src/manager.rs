@@ -7,7 +7,8 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::{
-    control::TorrentControlRegistry, stats::stats_registry::StatsRegistry, torrent_task::TorrentTask,
+    control::TorrentControlRegistry, peer_listener::InboundTorrentRegistry,
+    stats::stats_registry::StatsRegistry, torrent_task::TorrentTask,
 };
 
 pub struct Manager {}
@@ -16,6 +17,8 @@ impl Manager {
     pub async fn start(
         stats_registry: Arc<StatsRegistry>,
         control_registry: Arc<TorrentControlRegistry>,
+        inbound_registry: Arc<InboundTorrentRegistry>,
+        listen_port: u16,
     ) -> Result<()> {
         info!("Hydroxy Engine Started...");
 
@@ -121,6 +124,8 @@ impl Manager {
                         category,
                         stats_registry: stats_registry.clone(),
                         control_registry: control_registry.clone(),
+                        listen_port,
+                        inbound_registry: inbound_registry.clone(),
                     };
 
                     let active_torrents_ref = active_torrents.clone();
