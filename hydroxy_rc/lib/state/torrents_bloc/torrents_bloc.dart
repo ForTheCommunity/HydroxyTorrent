@@ -32,8 +32,10 @@ class TorrentsBloc extends Bloc<TorrentsEvent, TorrentsState> {
 
     try {
       var torrentsData = await getTorrents();
+      ApiClient.instance.markConnected();
       emit(_Loaded(torrents: torrentsData));
     } catch (e) {
+      ApiClient.instance.markDisconnected();
       print("TorrentsBloc fetch error: ${formatConnectionError(e)}");
     }
   }

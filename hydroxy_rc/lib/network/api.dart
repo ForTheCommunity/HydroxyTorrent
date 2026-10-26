@@ -3,6 +3,12 @@ import 'package:flutter/foundation.dart';
 import 'package:hydroxy_rc/configs/web_provider.dart';
 import 'package:hydroxy_rc/network/models.dart';
 
+enum DaemonConnectionState {
+  connecting,
+  connected,
+  disconnected,
+}
+
 class ApiClient {
   static final ApiClient _instance = ApiClient._internal();
   static ApiClient get instance => _instance;
@@ -11,6 +17,34 @@ class ApiClient {
   String _baseUrl = 'http://127.0.0.1:10000';
   String? _username;
   late final Dio dio;
+
+  bool _hasEverConnected = false;
+  final ValueNotifier<DaemonConnectionState> connectionStateNotifier =
+      ValueNotifier<DaemonConnectionState>(DaemonConnectionState.connecting);
+
+  DaemonConnectionState get connectionState => connectionStateNotifier.value;
+  bool get isConnected => connectionState == DaemonConnectionState.connected;
+
+  void markConnected() {
+    _hasEverConnected = true;
+    if (connectionStateNotifier.value != DaemonConnectionState.connected) {
+      connectionStateNotifier.value = DaemonConnectionState.connected;
+    }
+  }
+
+  void markDisconnected() {
+    final next = _hasEverConnected
+        ? DaemonConnectionState.disconnected
+        : DaemonConnectionState.connecting;
+    if (connectionStateNotifier.value != next) {
+      connectionStateNotifier.value = next;
+    }
+  }
+
+  void resetConnectionState() {
+    _hasEverConnected = false;
+    connectionStateNotifier.value = DaemonConnectionState.connecting;
+  }
 
   ApiClient._internal() {
     _baseUrl = _detectInitialBaseUrl();
@@ -27,6 +61,22 @@ class ApiClient {
           options.headers['X-Hydroxy-Token'] = _authToken;
         }
         return handler.next(options);
+      },
+      onResponse: (response, handler) {
+        if (response.statusCode != null && response.statusCode! < 400) {
+          markConnected();
+        }
+        return handler.next(response);
+      },
+      onError: (DioException error, handler) {
+        if (error.type == DioExceptionType.connectionTimeout ||
+            error.type == DioExceptionType.sendTimeout ||
+            error.type == DioExceptionType.receiveTimeout ||
+            error.type == DioExceptionType.connectionError ||
+            error.type == DioExceptionType.unknown) {
+          markDisconnected();
+        }
+        return handler.next(error);
       },
     ));
   }
@@ -112,6 +162,7 @@ class ApiClient {
     } finally {
       _authToken = null;
       _username = null;
+      resetConnectionState();
     }
   }
 
