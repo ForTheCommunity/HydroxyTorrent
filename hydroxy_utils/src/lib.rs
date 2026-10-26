@@ -17,8 +17,8 @@ pub fn get_peer_id() -> [u8; 20] {
     // (1 digit major, 1 digit minor, 2 digits patch)
     let version_str = format!("{:01}{:01}{:02}", major % 10, minor % 10, patch % 100);
 
-    // 8-byte prefix: -HT0100-
-    let prefix = format!("-HT{}-", version_str);
+    // 8-byte prefix: -OH0100-
+    let prefix = format!("-OH{}-", version_str);
     peer_id[..8].copy_from_slice(prefix.as_bytes());
 
     // Filling remaining 12 bytes with randomness

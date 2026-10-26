@@ -6,7 +6,7 @@ pub fn parse_peer_id(peer_id: &[u8; 20]) -> String {
         let client_code = &peer_id[1..3];
         let ver_bytes = [peer_id[3], peer_id[4], peer_id[5], peer_id[6]];
         let client_name = match client_code {
-            b"HT" => "HydroxyTorrent",
+            b"OH" | b"HT" | b"HY" => "HydroxyTorrent",
             b"qB" => "qBittorrent",
             b"TR" => "Transmission",
             b"UT" => "µTorrent",
@@ -165,8 +165,17 @@ mod tests {
     #[test]
     fn test_hydroxytorrent() {
         let mut id = [0u8; 20];
-        id[..8].copy_from_slice(b"-HT0100-");
+        id[..8].copy_from_slice(b"-OH0100-");
         assert_eq!(parse_peer_id(&id), "HydroxyTorrent 0.1.0");
+
+        let mut legacy_id = [0u8; 20];
+        legacy_id[..8].copy_from_slice(b"-HT0100-");
+        assert_eq!(parse_peer_id(&legacy_id), "HydroxyTorrent 0.1.0");
+
+        let generated_id = crate::get_peer_id();
+        assert_eq!(&generated_id[..3], b"-OH");
+        assert_eq!(generated_id[7], b'-');
+        assert!(parse_peer_id(&generated_id).starts_with("HydroxyTorrent"));
     }
 
     #[test]
