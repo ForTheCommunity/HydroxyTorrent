@@ -1,0 +1,6 @@
+.vscode/
+
+target
+*.torrent
+*.log
+ignored_dir/

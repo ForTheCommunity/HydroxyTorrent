@@ -1,0 +1,5 @@
+[workspace]
+resolver = "3"
+members = [
+    "hydroxy_bencode", "hydroxy_pwp", "hydroxy_storage_io", "hydroxy_daemon", "hydroxy_tracker", "hydroxy_utils", "hydroxy_config", "hydroxy_state", "hydroxy_engine", "hydroxy_dht", "hydroxy_utp",
+]

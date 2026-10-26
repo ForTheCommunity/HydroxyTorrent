@@ -1,0 +1,12 @@
+[package]
+name = "hydroxy_utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hydroxy_bencode = { path = "../hydroxy_bencode" }
+
+# third party dependencies
+thiserror = "2.0.17"
+sha1 = "0.10.6"
+rand = "0.10.1"

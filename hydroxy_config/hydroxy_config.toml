@@ -1,0 +1,66 @@
+# NOTE : There will be breaking changes in config file.
+
+[network_config]
+# "0.0.0.0" to listen on all interfaces.
+listen_address = "0.0.0.0"
+# assign a port number for app to listen on.
+# port for listening for incoming connections
+listen_port = 9999
+
+
+# Session limits: active transfers, bandwidth speed limits, peer connections
+[session_config]
+# Maximum concurrent active downloads (0 = unlimited, default 15)
+max_active_downloads = 15
+# Maximum concurrent active uploads / seeding torrents (0 = unlimited, default 5)
+max_active_uploads = 5
+# Global download rate limit in KB/s (0 = unlimited)
+max_download_speed_kbps = 0
+# Global upload rate limit in KB/s (0 = unlimited)
+max_upload_speed_kbps = 0
+# Maximum peer connections per torrent swarm (default 50)
+max_peers_per_torrent = 50
+# Maximum total peer connections across all swarms (default 300)
+max_total_peers = 300
+
+
+# watch directory will reflected like this in download_directory...
+# <Watch Directory>/Ubuntu/ubuntu_24.iso.torrent => <Download Directory>/Ubuntu/ubuntu_24.iso
+# <Watch Directory>/Ubuntu/ubuntu_23.iso.torrent => <Download Directory>/Ubuntu/ubuntu_23.iso
+# <Watch Directory>/DebianOS/debian_10.iso.torrent => <Download Directory>/DebianOS/debian_10.iso
+# <Watch Directory>/DebianOS/debian_11.iso.torrent => <Download Directory>/DebianOS/debian_11.iso
+# Note : dot torrent files inside watch_directory will be ignored.
+# it should be inside some folder/category (like Ubuntu or Debian).
+[storage_config]
+# App will scan Watch Directory for dot torrent files.
+watch_directory = "/home/user_1/temp/hydroxy/dottorrents"
+# Path while app will save downloaded files.
+download_directory = "/home/user_1/temp/hydroxy/downloads"
+# Reflection means when you delete dot torrent file from
+# watch directory downloaded torrent will also be deleted.
+# it is disabled by default.
+reflection = false
+# Maximum depth of subdirectories to scan in watch directory for categories (default 3)
+# e.g., 1 = category, 2 = category/subcategory, 3 = category/subcategory/collection
+watch_directory_max_depth = 3
+
+
+# Note : RPC must be enabled for making any remote connection
+# using web-ui, Android/Windows/Linux/MacOS Remote Controller App, etc...
+[remote_config]
+# enable/disable RPC. [enabled by default]
+# `true` for enable & `false` for disable.
+rpc_enabled = true
+# enable/disable Web-UI.
+# `true` for enable & `false` for disable.
+web_ui_enabled = false
+# Address in which RPC listen on
+# use "127.0.0.1" to listen on Localhost only.
+# use "0.0.0.0" to listen on all interfaces.
+listen_address = "127.0.0.1"
+# port for RPC Server & Web-UI to listen on.
+listen_port = 10000
+# username
+username = ""
+# password
+password = ""

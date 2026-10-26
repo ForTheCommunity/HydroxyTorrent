@@ -1,0 +1,12 @@
+[package]
+name = "hydroxy_storage_io"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hydroxy_utils = {path = "../hydroxy_utils"}
+
+# third party dependencies
+thiserror = "2.0.17"
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1.44"

@@ -1,0 +1,25 @@
+[package]
+name = "hydroxy_engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hydroxy_config = { path = "../hydroxy_config" }
+hydroxy_peer_wire_proto = { path = "../hydroxy_pwp" }
+hydroxy_state = { path = "../hydroxy_state" }
+hydroxy_storage_io = { path = "../hydroxy_storage_io" }
+hydroxy_tracker = { path = "../hydroxy_tracker" }
+hydroxy_utils = { path = "../hydroxy_utils" }
+
+# third party dependencies
+thiserror = "2.0.17"
+dashmap = "6.2.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha1 = "0.10.6"
+tracing = "0.1.44"
+tokio = { version = "1.49.0", features = ["full"] }
+axum = { version = "0.7", features = ["multipart"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+base64 = "0.22"
+anyhow = "1.0.104"
