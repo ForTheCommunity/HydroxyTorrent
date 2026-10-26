@@ -496,10 +496,10 @@ class TorrentDataTable extends StatelessWidget {
                 margin: const EdgeInsets.only(right: 6),
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                 decoration: BoxDecoration(
-                  color: colors.accentBlueColor.withOpacity(0.18),
+                  color: Color.fromRGBO(colors.accentBlueColor.red, colors.accentBlueColor.green, colors.accentBlueColor.blue, 0.18),
                   borderRadius: BorderRadius.circular(3),
                   border: Border.all(
-                    color: colors.accentBlueColor.withOpacity(0.5),
+                    color: Color.fromRGBO(colors.accentBlueColor.red, colors.accentBlueColor.green, colors.accentBlueColor.blue, 0.5),
                     width: 0.5,
                   ),
                 ),

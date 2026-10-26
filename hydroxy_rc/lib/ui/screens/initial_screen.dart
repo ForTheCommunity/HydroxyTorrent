@@ -107,7 +107,7 @@ class _InitialScreenState extends State<InitialScreen> {
         Expanded(
           flex: 5,
           child: Container(
-            color: theme.colorScheme.primaryContainer.withOpacity(0.4),
+            color: Color.fromRGBO(theme.colorScheme.primaryContainer.red, theme.colorScheme.primaryContainer.green, theme.colorScheme.primaryContainer.blue, 0.4),
             padding: const EdgeInsets.all(48.0),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -152,11 +152,11 @@ class _InitialScreenState extends State<InitialScreen> {
                   color: theme.colorScheme.surface,
                   borderRadius: BorderRadius.circular(24),
                   border: Border.all(
-                    color: theme.colorScheme.outlineVariant.withOpacity(0.5),
+                    color: Color.fromRGBO(theme.colorScheme.outlineVariant.red, theme.colorScheme.outlineVariant.green, theme.colorScheme.outlineVariant.blue, 0.5),
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.04),
+                      color: const Color.fromRGBO(0, 0, 0, 0.04),
                       blurRadius: 24,
                       offset: const Offset(0, 12),
                     ),
@@ -254,7 +254,7 @@ class _InitialScreenState extends State<InitialScreen> {
               decoration: BoxDecoration(
                 color: context.appColors.badgeErrorBackgroundColor,
                 border: Border.all(
-                  color: context.appColors.accentRedColor.withOpacity(0.5),
+                  color: Color.fromRGBO(context.appColors.accentRedColor.red, context.appColors.accentRedColor.green, context.appColors.accentRedColor.blue, 0.5),
                 ),
                 borderRadius: BorderRadius.circular(8),
               ),
@@ -282,7 +282,7 @@ class _InitialScreenState extends State<InitialScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               margin: const EdgeInsets.only(bottom: 16),
               decoration: BoxDecoration(
-                color: theme.colorScheme.errorContainer.withOpacity(0.5),
+                color: Color.fromRGBO(theme.colorScheme.errorContainer.red, theme.colorScheme.errorContainer.green, theme.colorScheme.errorContainer.blue, 0.5),
                 border: Border.all(color: theme.colorScheme.error),
                 borderRadius: BorderRadius.circular(8),
               ),

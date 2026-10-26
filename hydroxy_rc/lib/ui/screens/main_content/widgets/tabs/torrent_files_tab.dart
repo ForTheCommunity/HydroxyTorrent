@@ -421,7 +421,7 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.folder_open, size: 32, color: colors.tableSecondaryTextColor.withOpacity(0.4)),
+            Icon(Icons.folder_open, size: 32, color: Color.fromRGBO(colors.tableSecondaryTextColor.red, colors.tableSecondaryTextColor.green, colors.tableSecondaryTextColor.blue, 0.4)),
             const SizedBox(height: 8),
             Text(
               'No files found for "${widget.torrentName}"',

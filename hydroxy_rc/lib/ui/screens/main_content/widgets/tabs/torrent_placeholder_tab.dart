@@ -49,7 +49,7 @@ class TorrentPlaceholderTab extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon, size: 28, color: colors.tableSecondaryTextColor.withOpacity(0.4)),
+                  Icon(icon, size: 28, color: Color.fromRGBO(colors.tableSecondaryTextColor.red, colors.tableSecondaryTextColor.green, colors.tableSecondaryTextColor.blue, 0.4)),
                   const SizedBox(height: 6),
                   Text(
                     'No $title data available for ${torrent.name}',
@@ -67,7 +67,7 @@ class TorrentPlaceholderTab extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 32, color: colors.tableSecondaryTextColor.withOpacity(0.4)),
+          Icon(icon, size: 32, color: Color.fromRGBO(colors.tableSecondaryTextColor.red, colors.tableSecondaryTextColor.green, colors.tableSecondaryTextColor.blue, 0.4)),
           const SizedBox(height: 8),
           Text(
             '$title information for "${torrent.name}"',

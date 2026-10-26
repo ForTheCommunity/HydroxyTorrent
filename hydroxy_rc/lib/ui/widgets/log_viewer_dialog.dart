@@ -1,6 +1,8 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
 
 class LogViewerDialog extends StatefulWidget {
@@ -97,11 +99,7 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             // Header Bar
             Row(
               children: [
-                const Icon(
-                  Icons.terminal,
-                  color: Color(0xFF00FF66),
-                  size: 20,
-                ),
+                const Icon(Icons.terminal, color: Color(0xFF00FF66), size: 20),
                 const SizedBox(width: 8),
                 const Text(
                   'Daemon Logs',
@@ -113,10 +111,12 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                 ),
                 const SizedBox(width: 12),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.08),
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: const Row(
@@ -129,10 +129,7 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                       SizedBox(width: 4),
                       Text(
                         'Live (2s)',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 10,
-                        ),
+                        style: TextStyle(color: Colors.white70, fontSize: 10),
                       ),
                     ],
                   ),
@@ -145,10 +142,15 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                   icon: const Icon(Icons.copy, size: 16, color: Colors.white70),
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: _logs));
+                    final colors = context.appColors;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Logs copied to clipboard'),
-                        duration: Duration(seconds: 2),
+                      SnackBar(
+                        content: Text(
+                          'Logs copied to clipboard',
+                          style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                        backgroundColor: colors.snackBarBackgroundColor,
+                        duration: const Duration(seconds: 2),
                       ),
                     );
                   },
@@ -157,7 +159,11 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                 // Refresh Button
                 IconButton(
                   tooltip: 'Refresh now',
-                  icon: const Icon(Icons.refresh, size: 18, color: Colors.white70),
+                  icon: const Icon(
+                    Icons.refresh,
+                    size: 18,
+                    color: Colors.white70,
+                  ),
                   onPressed: () => _fetchLogs(),
                 ),
 
@@ -167,7 +173,9 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                   icon: Icon(
                     _autoScroll ? Icons.vertical_align_bottom : Icons.pause,
                     size: 18,
-                    color: _autoScroll ? const Color(0xFF00FF66) : Colors.white38,
+                    color: _autoScroll
+                        ? const Color(0xFF00FF66)
+                        : Colors.white38,
                   ),
                   onPressed: () {
                     setState(() {
@@ -179,7 +187,11 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                 // Close Button
                 IconButton(
                   tooltip: 'Close',
-                  icon: const Icon(Icons.close, size: 18, color: Colors.white70),
+                  icon: const Icon(
+                    Icons.close,
+                    size: 18,
+                    color: Colors.white70,
+                  ),
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ],

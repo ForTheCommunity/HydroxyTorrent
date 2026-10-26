@@ -229,7 +229,10 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
         final colors = context.appColors;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Resumed $count of ${torrents.length} torrents'),
+            content: Text(
+              'Resumed $count of ${torrents.length} torrents',
+              style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
+            ),
             duration: const Duration(seconds: 2),
             backgroundColor: colors.snackBarBackgroundColor,
           ),
@@ -250,7 +253,10 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
         final colors = context.appColors;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Stopped $count of ${torrents.length} torrents'),
+            content: Text(
+              'Stopped $count of ${torrents.length} torrents',
+              style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
+            ),
             duration: const Duration(seconds: 2),
             backgroundColor: colors.snackBarBackgroundColor,
           ),
@@ -375,6 +381,7 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
             isMultiple
                 ? 'Force rechecking $successCount of ${torrents.length} torrents...'
                 : 'Force rechecking "${torrents.first.name}"...',
+            style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
           ),
           duration: const Duration(seconds: 2),
           backgroundColor: colors.snackBarBackgroundColor,
@@ -402,6 +409,7 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
             torrents.length == 1
                 ? 'Sequential download for "${torrents.first.name}" ${enable ? "Enabled" : "Disabled"}'
                 : 'Sequential download for ${torrents.length} torrents ${enable ? "Enabled" : "Disabled"}',
+            style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
           ),
           duration: const Duration(seconds: 2),
           backgroundColor: colors.snackBarBackgroundColor,
@@ -611,10 +619,10 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
-              color: colors.accentGreenColor.withOpacity(0.15),
+              color: Color.fromRGBO(colors.accentGreenColor.red, colors.accentGreenColor.green, colors.accentGreenColor.blue, 0.15),
               borderRadius: BorderRadius.circular(4),
               border: Border.all(
-                color: colors.accentGreenColor.withOpacity(0.4),
+                color: Color.fromRGBO(colors.accentGreenColor.red, colors.accentGreenColor.green, colors.accentGreenColor.blue, 0.4),
               ),
             ),
             child: Text(

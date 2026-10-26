@@ -13,6 +13,7 @@ import 'package:hydroxy_rc/themes/app_theme.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/models/torrent_structure_ext.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/torrent_dashboard_screen.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/widgets/torrent_categories_sidebar.dart';
+import 'package:hydroxy_rc/ui/screens/mobile/mobile_main_screen.dart';
 import 'package:hydroxy_rc/ui/widgets/log_viewer_dialog.dart';
 
 class MainScreen extends StatefulWidget {
@@ -86,12 +87,37 @@ class _MainScreenState extends State<MainScreen> {
         });
       }
     } catch (_) {
-      // Ignore network errors when daemon is off or booting
+      if (mounted && _systemStats != null) {
+        setState(() {
+          _systemStats = null;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Breakpoint threshold for Desktop / Mobile layout.
+        // Also triggers mobile UI if running on native mobile platform (Android / iOS)
+        // or when viewed on narrow screens like mobile browsers.
+        final isMobile = constraints.maxWidth < 768 ||
+            defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS;
+
+        if (isMobile) {
+          return MobileMainScreen(
+            initialFilter: _selectedCategoryFilter,
+          );
+        }
+
+        return _buildDesktopLayout(context);
+      },
+    );
+  }
+
+  Widget _buildDesktopLayout(BuildContext context) {
     final colors = context.appColors;
     return Scaffold(
       backgroundColor: colors.scaffoldBackgroundColor,
@@ -163,185 +189,183 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildStatusBar(BuildContext context) {
-    return BlocBuilder<TorrentsBloc, TorrentsState>(
-      builder: (context, state) {
-        final torrents = state.maybeWhen(
-          loaded: (torrents) => torrents,
-          orElse: () => const <TorrentStructure>[],
-        );
+    return ValueListenableBuilder<DaemonConnectionState>(
+      valueListenable: ApiClient.instance.connectionStateNotifier,
+      builder: (context, connState, _) {
+        final isOnline = connState == DaemonConnectionState.connected;
+        final statusColor = connState == DaemonConnectionState.connected
+            ? context.appColors.accentGreenColor
+            : (connState == DaemonConnectionState.disconnected
+                ? context.appColors.accentRedColor
+                : context.appColors.accentAmberColor);
+        final statusText = connState == DaemonConnectionState.connected
+            ? 'Connected'
+            : (connState == DaemonConnectionState.disconnected
+                ? 'Disconnected'
+                : 'Connecting...');
 
-        int totalDownSpeed = 0;
-        int totalUpSpeed = 0;
-        for (final t in torrents) {
-          totalDownSpeed += t.downloadSpeedBytes;
-          totalUpSpeed += t.uploadSpeedBytes;
-        }
+        return BlocBuilder<TorrentsBloc, TorrentsState>(
+          builder: (context, state) {
+            final torrents = isOnline
+                ? state.maybeWhen(
+                    loaded: (torrents) => torrents,
+                    orElse: () => const <TorrentStructure>[],
+                  )
+                : const <TorrentStructure>[];
 
-        final downSpeedStr = formatBytesDynamic(
-          totalDownSpeed.toString(),
-          isSpeed: true,
-        );
-        final upSpeedStr = formatBytesDynamic(
-          totalUpSpeed.toString(),
-          isSpeed: true,
-        );
+            int totalDownSpeed = 0;
+            int totalUpSpeed = 0;
+            for (final t in torrents) {
+              totalDownSpeed += t.downloadSpeedBytes;
+              totalUpSpeed += t.uploadSpeedBytes;
+            }
 
-        final isOnline = state.maybeWhen(
-          loaded: (_) => true,
-          orElse: () => false,
-        );
+            final downSpeedStr = formatBytesDynamic(
+              totalDownSpeed.toString(),
+              isSpeed: true,
+            );
+            final upSpeedStr = formatBytesDynamic(
+              totalUpSpeed.toString(),
+              isSpeed: true,
+            );
 
-        final colors = context.appColors;
-        return Container(
-          height: 22,
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: colors.statusBarBackgroundColor,
-            border: Border(
-              top: BorderSide(color: colors.statusBarBorderColor),
-            ),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // Online Indicator
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color:
-                      isOnline ? colors.accentGreenColor : colors.accentAmberColor,
+            final colors = context.appColors;
+            return Container(
+              height: 22,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: colors.statusBarBackgroundColor,
+                border: Border(
+                  top: BorderSide(color: colors.statusBarBorderColor),
                 ),
               ),
-              const SizedBox(width: 6),
-              Text(
-                isOnline ? 'Connected' : 'Connecting...',
-                style: TextStyle(
-                  color: colors.statusBarTextColor,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w400,
-                ),
-              ),
-              const SizedBox(width: 12),
-              VerticalDivider(
-                color: colors.statusBarBorderColor,
-                width: 1,
-                indent: 4,
-                endIndent: 4,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Torrents: ${torrents.length}',
-                style: TextStyle(
-                  color: colors.statusBarTextColor,
-                  fontSize: 11,
-                ),
-              ),
-
-              if (_systemStats != null) ...[
-                const SizedBox(width: 14),
-                VerticalDivider(
-                  color: colors.statusBarBorderColor,
-                  width: 1,
-                  indent: 4,
-                  endIndent: 4,
-                ),
-                const SizedBox(width: 14),
-
-                // Program (Daemon) RAM Usage
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.memory,
-                      size: 13,
-                      color: colors.accentPurpleColor,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      'App RAM: ${formatBytesDynamic(_systemStats!.processRssBytes.toString())}',
-                      style: TextStyle(
-                        color: colors.statusBarTextColor,
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(width: 14),
-
-                // System RAM Usage
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.pie_chart_outline,
-                      size: 13,
-                      color: colors.accentBlueColor,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      'Sys RAM: ${formatBytesDynamic(_systemStats!.systemUsedBytes.toString())} / ${formatBytesDynamic(_systemStats!.systemTotalBytes.toString())} (${(_systemStats!.systemMemoryUsagePercent * 100).toStringAsFixed(0)}%)',
-                      style: TextStyle(
-                        color: colors.statusBarTextColor,
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-
-              const Spacer(),
-
-              // Download Speed Metric
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.arrow_downward,
-                    size: 13,
-                    color: colors.downloadSpeedColor,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    downSpeedStr,
-                    style: TextStyle(
-                      color: colors.downloadSpeedColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      fontFamily: 'monospace',
+                  // Online Indicator
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: statusColor,
                     ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    statusText,
+                    style: TextStyle(
+                      color: colors.statusBarTextColor,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+
+                  if (isOnline && _systemStats != null) ...[
+                    const SizedBox(width: 14),
+                    VerticalDivider(
+                      color: colors.statusBarBorderColor,
+                      width: 1,
+                      indent: 4,
+                      endIndent: 4,
+                    ),
+                    const SizedBox(width: 14),
+
+                    // Program (Daemon) RAM Usage
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.memory,
+                          size: 13,
+                          color: colors.accentPurpleColor,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          'App RAM: ${formatBytesDynamic(_systemStats!.processRssBytes.toString())}',
+                          style: TextStyle(
+                            color: colors.statusBarTextColor,
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(width: 14),
+
+                    // System RAM Usage
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.pie_chart_outline,
+                          size: 13,
+                          color: colors.accentBlueColor,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          'Sys RAM: ${formatBytesDynamic(_systemStats!.systemUsedBytes.toString())} / ${formatBytesDynamic(_systemStats!.systemTotalBytes.toString())} (${(_systemStats!.systemMemoryUsagePercent * 100).toStringAsFixed(0)}%)',
+                          style: TextStyle(
+                            color: colors.statusBarTextColor,
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+
+                  const Spacer(),
+
+                  // Download Speed Metric
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.arrow_downward,
+                        size: 13,
+                        color: colors.downloadSpeedColor,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        downSpeedStr,
+                        style: TextStyle(
+                          color: colors.downloadSpeedColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 16),
+
+                  // Upload Speed Metric
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.arrow_upward,
+                        size: 13,
+                        color: colors.uploadSpeedColor,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        upSpeedStr,
+                        style: TextStyle(
+                          color: colors.uploadSpeedColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-              const SizedBox(width: 16),
-
-              // Upload Speed Metric
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.arrow_upward,
-                    size: 13,
-                    color: colors.uploadSpeedColor,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    upSpeedStr,
-                    style: TextStyle(
-                      color: colors.uploadSpeedColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
@@ -361,9 +385,9 @@ class _MainScreenState extends State<MainScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // App Logo / Title
+          // App Logo / Title (Placeholder until custom logo is created)
           Icon(
-            Icons.water_drop,
+            Icons.image_not_supported_outlined,
             color: colors.titleBarLogoColor,
             size: 16,
           ),
@@ -467,7 +491,7 @@ class _MainScreenState extends State<MainScreen> {
                       decoration: BoxDecoration(
                         color: _isRegex
                             ? (_hasRegexError
-                                ? colors.searchBarErrorBorderColor.withOpacity(0.2)
+                                ? Color.fromRGBO(colors.searchBarErrorBorderColor.red, colors.searchBarErrorBorderColor.green, colors.searchBarErrorBorderColor.blue, 0.2)
                                 : colors.searchBarRegexActiveBackgroundColor)
                             : Colors.transparent,
                         borderRadius: BorderRadius.circular(3),
@@ -698,7 +722,7 @@ class _MainScreenState extends State<MainScreen> {
         backgroundColor: colors.popupMenuBackgroundColor,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(8),
-          side: BorderSide(color: colors.accentRedColor.withOpacity(0.5)),
+          side: BorderSide(color: Color.fromRGBO(colors.accentRedColor.red, colors.accentRedColor.green, colors.accentRedColor.blue, 0.5)),
         ),
         title: Row(
           children: [
@@ -732,8 +756,16 @@ class _MainScreenState extends State<MainScreen> {
               Navigator.of(ctx).pop();
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: const Text('Sending shutdown command to daemon...'),
+                  content: Text(
+                    'Sending shutdown command to daemon...',
+                    style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
                   backgroundColor: colors.snackBarBackgroundColor,
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: BorderSide(color: colors.popupMenuBorderColor),
+                  ),
                   duration: const Duration(seconds: 2),
                 ),
               );

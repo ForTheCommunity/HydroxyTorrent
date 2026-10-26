@@ -146,7 +146,7 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.location_on_outlined, size: 32, color: colors.tableSecondaryTextColor.withOpacity(0.4)),
+            Icon(Icons.location_on_outlined, size: 32, color: Color.fromRGBO(colors.tableSecondaryTextColor.red, colors.tableSecondaryTextColor.green, colors.tableSecondaryTextColor.blue, 0.4)),
             const SizedBox(height: 8),
             Text(
               'No trackers found for "${widget.torrentName}"',
@@ -202,10 +202,10 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: colors.accentAmberColor.withOpacity(0.15),
+                        color: Color.fromRGBO(colors.accentAmberColor.red, colors.accentAmberColor.green, colors.accentAmberColor.blue, 0.15),
                         borderRadius: BorderRadius.circular(4),
                         border: Border.all(
-                          color: colors.accentAmberColor.withOpacity(0.5),
+                          color: Color.fromRGBO(colors.accentAmberColor.red, colors.accentAmberColor.green, colors.accentAmberColor.blue, 0.5),
                           width: 0.8,
                         ),
                       ),
@@ -282,7 +282,10 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
                             Clipboard.setData(ClipboardData(text: tracker.url));
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text('Copied tracker URL: ${tracker.url}'),
+                                content: Text(
+                                  'Copied tracker URL: ${tracker.url}',
+                                  style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
+                                ),
                                 duration: const Duration(seconds: 1),
                                 backgroundColor: colors.snackBarBackgroundColor,
                                 behavior: SnackBarBehavior.floating,

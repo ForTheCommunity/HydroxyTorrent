@@ -145,7 +145,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       margin: const EdgeInsets.only(bottom: 16),
                       decoration: BoxDecoration(
                         color: colors.badgeErrorBackgroundColor,
-                        border: Border.all(color: colors.accentRedColor.withOpacity(0.5)),
+                        border: Border.all(color: Color.fromRGBO(colors.accentRedColor.red, colors.accentRedColor.green, colors.accentRedColor.blue, 0.5)),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
@@ -178,7 +178,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                       decoration: BoxDecoration(
                         color: colors.badgeErrorBackgroundColor,
-                        border: Border.all(color: colors.accentRedColor.withOpacity(0.5)),
+                        border: Border.all(color: Color.fromRGBO(colors.accentRedColor.red, colors.accentRedColor.green, colors.accentRedColor.blue, 0.5)),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
