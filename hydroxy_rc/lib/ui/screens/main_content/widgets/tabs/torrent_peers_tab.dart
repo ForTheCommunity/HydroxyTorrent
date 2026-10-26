@@ -26,7 +26,7 @@ class _TorrentPeersTabState extends State<TorrentPeersTab> {
   String? _error;
 
   // Sorting State
-  int? _sortColumnIndex = 3; // Default to Down Speed descending
+  int? _sortColumnIndex = 4; // Default to Down Speed descending
   bool _isAscending = false;
 
   @override
@@ -101,22 +101,25 @@ class _TorrentPeersTabState extends State<TorrentPeersTab> {
         case 2: // State
           cmp = a.state.toLowerCase().compareTo(b.state.toLowerCase());
           break;
-        case 3: // Down Speed
+        case 3: // Progress
+          cmp = a.progress.compareTo(b.progress);
+          break;
+        case 4: // Down Speed
           cmp = a.downloadSpeed.compareTo(b.downloadSpeed);
           break;
-        case 4: // Up Speed
+        case 5: // Up Speed
           cmp = a.uploadSpeed.compareTo(b.uploadSpeed);
           break;
-        case 5: // Downloaded
+        case 6: // Downloaded
           cmp = a.downloadedBytes.compareTo(b.downloadedBytes);
           break;
-        case 6: // Uploaded
+        case 7: // Uploaded
           cmp = a.uploadedBytes.compareTo(b.uploadedBytes);
           break;
-        case 7: // Pieces
+        case 8: // Pieces
           cmp = a.piecesReceived.compareTo(b.piecesReceived);
           break;
-        case 8: // Duration
+        case 9: // Duration
           cmp = a.connectedDurationSecs.compareTo(b.connectedDurationSecs);
           break;
         default:
@@ -214,6 +217,11 @@ class _TorrentPeersTabState extends State<TorrentPeersTab> {
                     onSort: _onSort,
                   ),
                   DataColumn(
+                    label: Text('Progress', style: headerStyle),
+                    numeric: true,
+                    onSort: _onSort,
+                  ),
+                  DataColumn(
                     label: Text('Down Speed', style: headerStyle),
                     numeric: true,
                     onSort: _onSort,
@@ -257,6 +265,9 @@ class _TorrentPeersTabState extends State<TorrentPeersTab> {
                         ),
                       ),
                       DataCell(_buildStateBadge(context, peer.state)),
+                      DataCell(
+                        Text('${peer.progress.toStringAsFixed(1)}%', style: cellStyle),
+                      ),
                       DataCell(
                         Text(
                           formatBytesDynamic(

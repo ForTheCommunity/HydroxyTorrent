@@ -25,6 +25,7 @@ pub struct PeerStats {
     pub uploaded_bytes: u64,
     pub download_speed: SpeedTracker,
     pub upload_speed: SpeedTracker,
+    pub progress: f64,
     pub pieces_received: u32,
     pub connected_at: Instant,
     pub last_active: Instant,
@@ -42,6 +43,7 @@ impl PeerStats {
             uploaded_bytes: 0,
             download_speed: SpeedTracker::new(Duration::from_secs(5)),
             upload_speed: SpeedTracker::new(Duration::from_secs(5)),
+            progress: 0.0,
             pieces_received: 0,
             connected_at: now,
             last_active: now,
@@ -58,6 +60,7 @@ impl PeerStats {
             uploaded_bytes: self.uploaded_bytes,
             download_speed: self.download_speed.speed_bps(),
             upload_speed: self.upload_speed.speed_bps(),
+            progress: self.progress,
             pieces_received: self.pieces_received,
             connected_duration_secs: self.connected_at.elapsed().as_secs(),
         }
@@ -209,12 +212,12 @@ impl SpeedTracker {
             None => return 0.0,
         };
 
-        let time_delta = newest_sample
-            .0
-            .duration_since(oldest_sample.0)
-            .as_secs_f64();
-        let bytes_delta = newest_sample.1 - oldest_sample.1;
-        bytes_delta as f64 / time_delta
+        let elapsed = now.duration_since(oldest_sample.0).as_secs_f64();
+        if elapsed < 0.05 {
+            return 0.0;
+        }
+        let bytes_delta = newest_sample.1.saturating_sub(oldest_sample.1);
+        bytes_delta as f64 / elapsed
     }
 
     fn cleanup(&mut self, now: Instant) {
@@ -258,6 +261,7 @@ pub struct PeerStatsSnapshot {
     pub uploaded_bytes: u64,
     pub download_speed: f64,
     pub upload_speed: f64,
+    pub progress: f64,
     pub pieces_received: u32,
     pub connected_duration_secs: u64,
 }

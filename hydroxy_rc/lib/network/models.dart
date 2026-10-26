@@ -56,6 +56,7 @@ class PeerStatsSnapshot {
   final int port;
   final String clientId;
   final String state;
+  final double progress;
   final int downloadedBytes;
   final int uploadedBytes;
   final double downloadSpeed;
@@ -68,6 +69,7 @@ class PeerStatsSnapshot {
     required this.port,
     required this.clientId,
     required this.state,
+    required this.progress,
     required this.downloadedBytes,
     required this.uploadedBytes,
     required this.downloadSpeed,
@@ -82,6 +84,7 @@ class PeerStatsSnapshot {
       port: (json['port'] as num?)?.toInt() ?? 0,
       clientId: json['client_id']?.toString() ?? '',
       state: json['state']?.toString() ?? 'Connected',
+      progress: (json['progress'] as num?)?.toDouble() ?? 0.0,
       downloadedBytes: (json['downloaded_bytes'] as num?)?.toInt() ?? 0,
       uploadedBytes: (json['uploaded_bytes'] as num?)?.toInt() ?? 0,
       downloadSpeed: (json['download_speed'] as num?)?.toDouble() ?? 0.0,

@@ -729,11 +729,11 @@ impl TorrentTask {
                 info_hash,
                 peer_id: session_peer_id,
                 peer_state: PeerState {
-                    am_choking: true,
+                    am_choking: false,
                     am_interested: false,
                     peer_choking: true,
                     peer_interested: false,
-                    bitfield: vec![],
+                    bitfield: vec![0u8; (total_pieces + 7) / 8],
                 },
                 total_pieces,
                 piece_allocator,

@@ -129,6 +129,21 @@ impl StatsRegistry {
         }
     }
 
+    /// Called by `PeerWorker` when peer advertises available pieces.
+    pub fn update_peer_progress(
+        &self,
+        info_hash: &str,
+        ip: IpAddr,
+        port: u16,
+        progress: f64,
+    ) {
+        if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
+            if let Some(peer) = torrent.peers_stats.get_mut(&(ip, port)) {
+                peer.progress = progress;
+            }
+        }
+    }
+
     /// Called by `PeerWorker` on worker exit.
     pub fn peer_disconnected(&self, info_hash: &str, ip: IpAddr, port: u16) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
