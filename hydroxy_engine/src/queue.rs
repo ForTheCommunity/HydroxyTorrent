@@ -12,6 +12,7 @@ pub struct DownloadQueueManager {
 struct QueueInner {
     max_active: usize,
     active: HashSet<[u8; 20]>,
+    stalled: HashSet<[u8; 20]>,
     waiting: VecDeque<[u8; 20]>,
     notifiers: HashMap<[u8; 20], mpsc::Sender<()>>,
 }
@@ -22,6 +23,7 @@ impl DownloadQueueManager {
             inner: Arc::new(Mutex::new(QueueInner {
                 max_active,
                 active: HashSet::new(),
+                stalled: HashSet::new(),
                 waiting: VecDeque::new(),
                 notifiers: HashMap::new(),
             })),
@@ -39,7 +41,7 @@ impl DownloadQueueManager {
     pub async fn acquire_download_slot(&self, info_hash: [u8; 20]) -> (bool, mpsc::Receiver<()>) {
         let mut inner = self.inner.lock().await;
 
-        if inner.active.contains(&info_hash) {
+        if inner.active.contains(&info_hash) || inner.stalled.contains(&info_hash) {
             let (_, rx) = mpsc::channel(1);
             return (true, rx);
         }
@@ -48,14 +50,19 @@ impl DownloadQueueManager {
         inner.waiting.retain(|h| h != &info_hash);
         inner.notifiers.remove(&info_hash);
 
-        if inner.max_active == 0 || inner.active.len() < inner.max_active {
+        let max_total = if inner.max_active == 0 { 0 } else { (inner.max_active * 2).max(10) };
+        let under_active_limit = inner.max_active == 0 || inner.active.len() < inner.max_active;
+        let under_total_limit = max_total == 0 || (inner.active.len() + inner.stalled.len()) < max_total;
+
+        if under_active_limit && under_total_limit {
             inner.active.insert(info_hash);
             let (_, rx) = mpsc::channel(1);
             info!(
-                "Torrent {} acquired active download slot ({}/{} active)",
+                "Torrent {} acquired active download slot ({}/{} active, {} stalled)",
                 hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash),
                 inner.active.len(),
-                inner.max_active
+                inner.max_active,
+                inner.stalled.len()
             );
             (true, rx)
         } else {
@@ -63,46 +70,84 @@ impl DownloadQueueManager {
             inner.waiting.push_back(info_hash);
             inner.notifiers.insert(info_hash, tx);
             info!(
-                "Torrent {} queued for download (queue position: {}, active: {}/{})",
+                "Torrent {} queued for download (queue position: {}, active: {}/{}, stalled: {})",
                 hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash),
                 inner.waiting.len(),
                 inner.active.len(),
-                inner.max_active
+                inner.max_active,
+                inner.stalled.len()
             );
             (false, rx)
         }
     }
 
-    /// Release an active download slot or remove from the waiting queue.
+    /// Mark an active torrent as stalled (0 B/s download speed).
+    /// Releases its quota against `max_active` so waiting torrents can be promoted.
+    pub async fn mark_stalled(&self, info_hash: &[u8; 20]) {
+        let mut inner = self.inner.lock().await;
+        if inner.active.remove(info_hash) {
+            inner.stalled.insert(*info_hash);
+            info!(
+                "Torrent {} marked stalled (0 B/s). Releasing active quota: {}/{} active, {} stalled",
+                hydroxy_utils::torrent_info::OtherInfos::to_sha1(info_hash),
+                inner.active.len(),
+                inner.max_active,
+                inner.stalled.len()
+            );
+            Self::promote_waiting(&mut inner).await;
+        }
+    }
+
+    /// Mark a previously stalled torrent as active again because it resumed downloading data.
+    pub async fn mark_active(&self, info_hash: &[u8; 20]) {
+        let mut inner = self.inner.lock().await;
+        if inner.stalled.remove(info_hash) {
+            inner.active.insert(*info_hash);
+            info!(
+                "Torrent {} resumed active downloading. Active: {}/{}, Stalled: {}",
+                hydroxy_utils::torrent_info::OtherInfos::to_sha1(info_hash),
+                inner.active.len(),
+                inner.max_active,
+                inner.stalled.len()
+            );
+        }
+    }
+
+    /// Release an active or stalled download slot, or remove from the waiting queue.
     pub async fn release_download_slot(&self, info_hash: &[u8; 20]) {
         let mut inner = self.inner.lock().await;
         let was_active = inner.active.remove(info_hash);
+        let was_stalled = inner.stalled.remove(info_hash);
         inner.waiting.retain(|h| h != info_hash);
         inner.notifiers.remove(info_hash);
 
-        if was_active {
+        if was_active || was_stalled {
             info!(
-                "Torrent {} released download slot ({}/{} active)",
+                "Torrent {} released download slot ({}/{} active, {} stalled)",
                 hydroxy_utils::torrent_info::OtherInfos::to_sha1(info_hash),
                 inner.active.len(),
-                inner.max_active
+                inner.max_active,
+                inner.stalled.len()
             );
             Self::promote_waiting(&mut inner).await;
         }
     }
 
     async fn promote_waiting(inner: &mut QueueInner) {
+        let max_total = if inner.max_active == 0 { 0 } else { (inner.max_active * 2).max(10) };
         while (inner.max_active == 0 || inner.active.len() < inner.max_active)
+            && (max_total == 0 || (inner.active.len() + inner.stalled.len()) < max_total)
             && !inner.waiting.is_empty()
         {
             if let Some(next_hash) = inner.waiting.pop_front() {
                 if let Some(notifier) = inner.notifiers.remove(&next_hash) {
                     inner.active.insert(next_hash);
                     info!(
-                        "Promoted queued torrent {} to active download ({}/{} active)",
+                        "Promoted queued torrent {} to active download ({}/{} active, {} stalled)",
                         hydroxy_utils::torrent_info::OtherInfos::to_sha1(&next_hash),
                         inner.active.len(),
-                        inner.max_active
+                        inner.max_active,
+                        inner.stalled.len()
                     );
                     let _ = notifier.send(()).await;
                 }
@@ -148,6 +193,58 @@ mod tests {
         assert!(inner.active.contains(&hash2));
         assert!(!inner.active.contains(&hash1));
         assert_eq!(inner.waiting.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stalled_torrent_releases_active_quota_and_promotes_waiting() {
+        let q = DownloadQueueManager::new(2);
+
+        let hash1 = [1u8; 20];
+        let hash2 = [2u8; 20];
+        let hash3 = [3u8; 20];
+
+        let (active1, _rx1) = q.acquire_download_slot(hash1).await;
+        assert!(active1);
+
+        let (active2, _rx2) = q.acquire_download_slot(hash2).await;
+        assert!(active2);
+
+        let (active3, mut rx3) = q.acquire_download_slot(hash3).await;
+        assert!(!active3);
+
+        // Mark hash1 as stalled (0 B/s)
+        q.mark_stalled(&hash1).await;
+
+        // hash3 should now be automatically promoted without dropping hash1
+        tokio::time::timeout(std::time::Duration::from_millis(100), rx3.recv())
+            .await
+            .expect("timeout waiting for promotion")
+            .expect("channel closed");
+
+        {
+            let inner = q.inner.lock().await;
+            assert!(inner.stalled.contains(&hash1));
+            assert!(inner.active.contains(&hash2));
+            assert!(inner.active.contains(&hash3));
+            assert_eq!(inner.active.len(), 2);
+            assert_eq!(inner.stalled.len(), 1);
+            assert_eq!(inner.waiting.len(), 0);
+        }
+
+        // Now if hash1 resumes downloading speed, it is marked active again
+        q.mark_active(&hash1).await;
+        {
+            let inner = q.inner.lock().await;
+            assert!(inner.active.contains(&hash1));
+            assert!(!inner.stalled.contains(&hash1));
+        }
+
+        // When hash1 finishes downloading, it releases cleanly
+        q.release_download_slot(&hash1).await;
+        {
+            let inner = q.inner.lock().await;
+            assert!(!inner.active.contains(&hash1));
+        }
     }
 
     #[tokio::test]

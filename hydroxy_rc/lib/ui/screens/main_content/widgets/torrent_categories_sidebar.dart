@@ -94,7 +94,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
 
     for (final t in torrents) {
       final st = t.status.toLowerCase();
-      if (st == 'downloading') {
+      if (st == 'downloading' || st == 'stalled') {
         downloading++;
       } else if (st == 'seeding') {
         seeding++;

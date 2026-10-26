@@ -794,6 +794,9 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
         final targetStatus = f.substring('status:'.length).toLowerCase();
         result = result.where((t) {
           final st = t.status.toLowerCase();
+          if (targetStatus == 'downloading') {
+            return st == 'downloading' || st == 'stalled';
+          }
           if (targetStatus == 'paused') {
             return st == 'paused' || st == 'stopped';
           }
