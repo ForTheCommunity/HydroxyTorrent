@@ -23,6 +23,7 @@ use crate::{
     peer_worker::{PeerState, PeerWorker},
     piece_allocator::PieceAllocator,
     piece_assembler::PieceAssembler,
+    queue::DownloadQueueManager,
     stats::{
         stats::{TorrentFileStats, TrackerStats},
         stats_registry::StatsRegistry,
@@ -39,6 +40,7 @@ pub struct TorrentTask {
     pub control_registry: Arc<TorrentControlRegistry>,
     pub listen_port: u16,
     pub inbound_registry: Arc<InboundTorrentRegistry>,
+    pub queue_manager: Arc<DownloadQueueManager>,
 }
 
 impl TorrentTask {
@@ -163,12 +165,31 @@ impl TorrentTask {
         self.stats_registry.set_sequential(&info_hash_sha1, is_sequential);
 
         let all_done = piece_allocator.lock().await.all_complete();
-        if all_done {
+        let mut has_download_slot = false;
+        let is_active_for_announce = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let (mut slot_rx, is_active_now) = if all_done {
             info!("All pieces already downloaded — torrent complete (seeding)");
             self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
+            is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
+            let (_, rx) = mpsc::channel(1);
+            (rx, false)
         } else if is_paused {
             self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
-        }
+            let (_, rx) = mpsc::channel(1);
+            (rx, false)
+        } else {
+            let (active, rx) = self.queue_manager.acquire_download_slot(info_hash).await;
+            if active {
+                has_download_slot = true;
+                is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.stats_registry.set_status(&info_hash_sha1, None); // "downloading"
+            } else {
+                has_download_slot = false;
+                self.stats_registry.set_status(&info_hash_sha1, Some("queued".to_string()));
+            }
+            (rx, active)
+        };
 
         // shared torrent state
         let torrent_state = Arc::new(Mutex::new(hot_state));
@@ -207,7 +228,7 @@ impl TorrentTask {
         };
 
         // Announce to all trackers concurrently in parallel, streaming peers as each tracker responds
-        if !is_paused && !trackers.is_empty() {
+        if !is_paused && (all_done || is_active_now) && !trackers.is_empty() {
             let init_trackers = trackers.clone();
             let init_stats = Arc::clone(&self.stats_registry);
             let init_hash_sha1 = info_hash_sha1.clone();
@@ -239,6 +260,7 @@ impl TorrentTask {
         let re_announce_peer_tx = new_peer_tx.clone();
         let re_announce_port = self.listen_port;
         let initially_complete = all_done;
+        let re_announce_active = Arc::clone(&is_active_for_announce);
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
@@ -248,6 +270,10 @@ impl TorrentTask {
 
             loop {
                 interval.tick().await;
+
+                if !re_announce_active.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue; // Skip announcing while queued or paused
+                }
 
                 let (is_complete, downloaded, remaining) = {
                     let alloc = re_announce_allocator.lock().await;
@@ -305,11 +331,15 @@ impl TorrentTask {
                             worker_set.shutdown().await;
                             connected_peers.lock().await.clear();
                             self.inbound_registry.unregister(&info_hash).await;
+                            self.queue_manager.release_download_slot(&info_hash).await;
                             break;
                         }
                         TorrentCommand::Pause => {
                             info!("Pausing torrent: {}", info_hash_sha1);
                             is_paused = true;
+                            has_download_slot = false;
+                            is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
+                            self.queue_manager.release_download_slot(&info_hash).await;
                             worker_set.shutdown().await;
                             connected_peers.lock().await.clear();
                             self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
@@ -360,63 +390,77 @@ impl TorrentTask {
 
                             let all_done = piece_allocator.lock().await.all_complete();
                             if all_done {
+                                is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
                                 self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
                             } else {
-                                self.stats_registry.set_status(&info_hash_sha1, None);
-                            }
-
-                            while let Some(peer) = peer_pool.pop_front() {
-                                if !Self::spawn_worker_if_new(
-                                    &mut worker_set,
-                                    &connected_peers,
-                                    peer,
-                                    info_hash,
-                                    session_peer_id,
-                                    total_pieces,
-                                    piece_length,
-                                    total_torrent_size,
-                                    &piece_hashes,
-                                    &piece_allocator,
-                                    &file_map,
-                                    &torrent_state,
-                                    &self.stats_registry,
-                                    have_tx.clone(),
-                                )
-                                .await
-                                {
-                                    peer_pool.push_front(peer);
-                                    break;
+                                let (active, rx) = self.queue_manager.acquire_download_slot(info_hash).await;
+                                slot_rx = rx;
+                                if active {
+                                    has_download_slot = true;
+                                    is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    self.stats_registry.set_status(&info_hash_sha1, None);
+                                } else {
+                                    has_download_slot = false;
+                                    is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    self.stats_registry.set_status(&info_hash_sha1, Some("queued".to_string()));
                                 }
                             }
 
-                            if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
-                                let (dl, rem) = {
-                                    let alloc = piece_allocator.lock().await;
-                                    (
-                                        alloc.downloaded_bytes(piece_length, total_torrent_size),
-                                        alloc.remaining_bytes(piece_length, total_torrent_size),
-                                    )
-                                };
-                                let resume_trackers = trackers.clone();
-                                let resume_stats = Arc::clone(&self.stats_registry);
-                                let resume_hash_sha1 = info_hash_sha1.clone();
-                                let resume_peer_tx = new_peer_tx.clone();
-                                let resume_port = self.listen_port;
-                                tokio::spawn(async move {
-                                    Self::announce_to_trackers_stream(
-                                        &resume_trackers,
-                                        &info_hash,
+                            let can_run = has_download_slot || all_done;
+                            if can_run {
+                                while let Some(peer) = peer_pool.pop_front() {
+                                    if !Self::spawn_worker_if_new(
+                                        &mut worker_set,
+                                        &connected_peers,
+                                        peer,
+                                        info_hash,
                                         session_peer_id,
-                                        resume_port,
-                                        dl,
-                                        0,
-                                        rem,
-                                        None,
-                                        Some((&resume_stats, &resume_hash_sha1)),
-                                        &resume_peer_tx,
+                                        total_pieces,
+                                        piece_length,
+                                        total_torrent_size,
+                                        &piece_hashes,
+                                        &piece_allocator,
+                                        &file_map,
+                                        &torrent_state,
+                                        &self.stats_registry,
+                                        have_tx.clone(),
                                     )
-                                    .await;
-                                });
+                                    .await
+                                    {
+                                        peer_pool.push_front(peer);
+                                        break;
+                                    }
+                                }
+
+                                if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
+                                    let (dl, rem) = {
+                                        let alloc = piece_allocator.lock().await;
+                                        (
+                                            alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                            alloc.remaining_bytes(piece_length, total_torrent_size),
+                                        )
+                                    };
+                                    let resume_trackers = trackers.clone();
+                                    let resume_stats = Arc::clone(&self.stats_registry);
+                                    let resume_hash_sha1 = info_hash_sha1.clone();
+                                    let resume_peer_tx = new_peer_tx.clone();
+                                    let resume_port = self.listen_port;
+                                    tokio::spawn(async move {
+                                        Self::announce_to_trackers_stream(
+                                            &resume_trackers,
+                                            &info_hash,
+                                            session_peer_id,
+                                            resume_port,
+                                            dl,
+                                            0,
+                                            rem,
+                                            None,
+                                            Some((&resume_stats, &resume_hash_sha1)),
+                                            &resume_peer_tx,
+                                        )
+                                        .await;
+                                    });
+                                }
                             }
                         }
                         TorrentCommand::Recheck => {
@@ -450,14 +494,22 @@ impl TorrentTask {
                             );
 
                             if recheck.completed_pieces == total_pieces {
+                                if has_download_slot {
+                                    has_download_slot = false;
+                                    self.queue_manager.release_download_slot(&info_hash).await;
+                                }
+                                is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
                                 self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
                             } else if is_paused {
                                 self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
-                            } else {
+                            } else if has_download_slot {
                                 self.stats_registry.set_status(&info_hash_sha1, None);
+                            } else {
+                                self.stats_registry.set_status(&info_hash_sha1, Some("queued".to_string()));
                             }
 
-                            if !is_paused {
+                            let can_run = has_download_slot || recheck.completed_pieces == total_pieces;
+                            if !is_paused && can_run {
                                 while let Some(peer) = peer_pool.pop_front() {
                                     if !Self::spawn_worker_if_new(
                                         &mut worker_set,
@@ -527,7 +579,7 @@ impl TorrentTask {
                                 .map(|s| s.uploaded_bytes)
                                 .unwrap_or(0);
 
-                            if !trackers.is_empty() {
+                            if !trackers.is_empty() && (has_download_slot || piece_allocator.lock().await.all_complete()) {
                                 let re_trackers = trackers.clone();
                                 let re_stats = Arc::clone(&self.stats_registry);
                                 let re_hash_sha1 = info_hash_sha1.clone();
@@ -552,9 +604,72 @@ impl TorrentTask {
                         }
                     }
                 }
+                // Handle queue promotion to active downloading
+                Some(()) = slot_rx.recv(), if !has_download_slot && !is_paused => {
+                    info!("Torrent {} promoted from queue to active downloading", info_hash_sha1);
+                    has_download_slot = true;
+                    is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.stats_registry.set_status(&info_hash_sha1, None);
+
+                    let (dl, rem) = {
+                        let alloc = piece_allocator.lock().await;
+                        (
+                            alloc.downloaded_bytes(piece_length, total_torrent_size),
+                            alloc.remaining_bytes(piece_length, total_torrent_size),
+                        )
+                    };
+
+                    while let Some(peer) = peer_pool.pop_front() {
+                        if !Self::spawn_worker_if_new(
+                            &mut worker_set,
+                            &connected_peers,
+                            peer,
+                            info_hash,
+                            session_peer_id,
+                            total_pieces,
+                            piece_length,
+                            total_torrent_size,
+                            &piece_hashes,
+                            &piece_allocator,
+                            &file_map,
+                            &torrent_state,
+                            &self.stats_registry,
+                            have_tx.clone(),
+                        )
+                        .await
+                        {
+                            peer_pool.push_front(peer);
+                            break;
+                        }
+                    }
+
+                    if !trackers.is_empty() {
+                        let resume_trackers = trackers.clone();
+                        let resume_stats = Arc::clone(&self.stats_registry);
+                        let resume_hash_sha1 = info_hash_sha1.clone();
+                        let resume_peer_tx = new_peer_tx.clone();
+                        let resume_port = self.listen_port;
+                        tokio::spawn(async move {
+                            Self::announce_to_trackers_stream(
+                                &resume_trackers,
+                                &info_hash,
+                                session_peer_id,
+                                resume_port,
+                                dl,
+                                0,
+                                rem,
+                                Some(TrackerEvents::Started),
+                                Some((&resume_stats, &resume_hash_sha1)),
+                                &resume_peer_tx,
+                            )
+                            .await;
+                        });
+                    }
+                }
                 // Handle inbound connections from listening port
                 Some(inbound) = inbound_rx.recv() => {
-                    if !is_paused {
+                    let can_connect = has_download_slot || piece_allocator.lock().await.all_complete();
+                    if !is_paused && can_connect {
                         Self::spawn_inbound_worker(
                             &mut worker_set,
                             &connected_peers,
@@ -583,7 +698,8 @@ impl TorrentTask {
                         }
                     }
 
-                    if !is_paused {
+                    let can_connect = has_download_slot || piece_allocator.lock().await.all_complete();
+                    if !is_paused && can_connect {
                         while let Some(peer) = peer_pool.pop_front() {
                             if !Self::spawn_worker_if_new(
                                 &mut worker_set,
@@ -621,7 +737,8 @@ impl TorrentTask {
                                 warn!("Worker {}:{} finished with error: {}", ip, port, e);
                             }
 
-                            if !is_paused {
+                            let can_connect = has_download_slot || piece_allocator.lock().await.all_complete();
+                            if !is_paused && can_connect {
                                 while let Some(next_peer) = peer_pool.pop_front() {
                                     if Self::spawn_worker_if_new(
                                         &mut worker_set,
@@ -653,6 +770,10 @@ impl TorrentTask {
 
                     // Check if all pieces are complete
                     if piece_allocator.lock().await.all_complete() {
+                        if has_download_slot {
+                            has_download_slot = false;
+                            self.queue_manager.release_download_slot(&info_hash).await;
+                        }
                         let current_status = self.stats_registry.snapshot_torrent(&info_hash_sha1).and_then(|s| s.custom_status);
                         if current_status.as_deref() != Some("seeding") {
                             info!("All pieces complete — torrent is seeding");
@@ -665,6 +786,7 @@ impl TorrentTask {
 
         self.inbound_registry.unregister(&info_hash).await;
         self.control_registry.unregister(&info_hash_sha1);
+        self.queue_manager.release_download_slot(&info_hash).await;
 
         let (final_downloaded, final_remaining, is_complete) = {
             let alloc = piece_allocator.lock().await;

@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::{
     control::TorrentControlRegistry, peer_listener::InboundTorrentRegistry,
-    stats::stats_registry::StatsRegistry, torrent_task::TorrentTask,
+    queue::DownloadQueueManager, stats::stats_registry::StatsRegistry, torrent_task::TorrentTask,
 };
 
 pub struct Manager {}
@@ -18,6 +18,7 @@ impl Manager {
         stats_registry: Arc<StatsRegistry>,
         control_registry: Arc<TorrentControlRegistry>,
         inbound_registry: Arc<InboundTorrentRegistry>,
+        queue_manager: Arc<DownloadQueueManager>,
         listen_port: u16,
     ) -> Result<()> {
         info!("Hydroxy Engine Started...");
@@ -69,24 +70,12 @@ impl Manager {
                     }
                 };
 
-            let max_active = if config.effective_max_active_downloads() == 0 {
-                15
-            } else {
-                config.effective_max_active_downloads()
-            };
+            queue_manager
+                .set_max_active(config.effective_max_active_downloads())
+                .await;
 
-            'scan_loop: for torrent_dir in torrents_dir_data {
+            for torrent_dir in torrents_dir_data {
                 for a_torrent in torrent_dir.torrent_files {
-                    let mut active = active_torrents.lock().await;
-                    if active.len() >= max_active {
-                        info!(
-                            "Active torrents limit reached ({}/{}), remaining torrents queued in watch directory",
-                            active.len(),
-                            max_active
-                        );
-                        break 'scan_loop;
-                    }
-
                     let root_dir = if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
                         download_dir.clone()
                     } else {
@@ -103,8 +92,9 @@ impl Manager {
 
                     let info_hash = torrent_info.other_infos.info_hash;
 
+                    let mut active = active_torrents.lock().await;
                     if active.contains(&info_hash) {
-                        continue; // Already downloading or seeding
+                        continue; // Already has a running TorrentTask
                     }
                     active.insert(info_hash);
                     drop(active);
@@ -126,6 +116,7 @@ impl Manager {
                         control_registry: control_registry.clone(),
                         listen_port,
                         inbound_registry: inbound_registry.clone(),
+                        queue_manager: queue_manager.clone(),
                     };
 
                     let active_torrents_ref = active_torrents.clone();

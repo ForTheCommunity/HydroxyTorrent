@@ -800,6 +800,9 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
           if (targetStatus == 'completed') {
             return st == 'completed' || st == 'seeding';
           }
+          if (targetStatus == 'queued') {
+            return st == 'queued';
+          }
           return st == targetStatus;
         }).toList();
       } else if (f.startsWith('category:')) {

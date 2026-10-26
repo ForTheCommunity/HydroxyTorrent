@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::manager::Manager;
 use crate::peer_listener::{InboundTorrentRegistry, PeerListener};
+use crate::queue::DownloadQueueManager;
 use crate::stats::stats_registry::StatsRegistry;
 
 pub mod control;
@@ -16,6 +17,7 @@ mod peer_worker;
 mod piece_allocator;
 mod piece_assembler;
 pub mod piece_verifier;
+pub mod queue;
 pub mod remote;
 pub mod stats;
 mod torrent_task;
@@ -57,10 +59,15 @@ impl HydroxyEngine {
             );
         }
 
+        let queue_manager = Arc::new(DownloadQueueManager::new(
+            config.effective_max_active_downloads(),
+        ));
+
         Manager::start(
             stats_registry,
             control_registry,
             inbound_registry,
+            queue_manager,
             listen_port,
         )
         .await?;

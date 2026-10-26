@@ -90,6 +90,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
     int completed = 0;
     int paused = 0;
     int checking = 0;
+    int queued = 0;
 
     for (final t in torrents) {
       final st = t.status.toLowerCase();
@@ -104,6 +105,8 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
         paused++;
       } else if (st == 'checking') {
         checking++;
+      } else if (st == 'queued') {
+        queued++;
       }
     }
 
@@ -113,6 +116,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
       'completed': completed,
       'paused': paused,
       'checking': checking,
+      'queued': queued,
     };
   }
 
@@ -217,6 +221,15 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
                             widget.selectedFilter == 'status:downloading',
                         onTap: () =>
                             widget.onFilterSelected('status:downloading'),
+                        depth: 1,
+                      ),
+                      _buildItem(
+                        label: 'Queued',
+                        icon: Icons.hourglass_top_rounded,
+                        iconColor: colors.accentAmberColor,
+                        count: statusCounts['queued'] ?? 0,
+                        isSelected: widget.selectedFilter == 'status:queued',
+                        onTap: () => widget.onFilterSelected('status:queued'),
                         depth: 1,
                       ),
                       _buildItem(
