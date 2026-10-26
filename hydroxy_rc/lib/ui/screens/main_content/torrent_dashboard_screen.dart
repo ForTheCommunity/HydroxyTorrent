@@ -1096,6 +1096,31 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
                       ),
                     ),
                   ),
+
+                  // Smooth Full-Width Overlay Drag Handle for Web UI & Desktop
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: currentPanelTotalHeight - 6,
+                    height: 12,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.resizeRow,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onVerticalDragUpdate: (details) {
+                          if (!_isPanelExpanded && details.delta.dy < -2) {
+                            setState(() {
+                              _isPanelExpanded = true;
+                            });
+                          }
+                          final newHeight = (_panelContentHeight - details.delta.dy)
+                              .clamp(_minPanelHeight, _maxPanelHeight);
+                          _panelContentHeight = newHeight;
+                          _panelContentHeightNotifier.value = newHeight;
+                        },
+                      ),
+                    ),
+                  ),
                 ],
               );
             },

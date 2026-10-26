@@ -5,6 +5,58 @@ import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
 
+class FileTreeNode {
+  final String name;
+  final String fullPath;
+  final bool isDirectory;
+  final TorrentFileItem? file;
+  final List<FileTreeNode> children = [];
+
+  FileTreeNode({
+    required this.name,
+    required this.fullPath,
+    required this.isDirectory,
+    this.file,
+  });
+
+  int get totalSize {
+    if (!isDirectory && file != null) {
+      return file!.size;
+    }
+    return children.fold<int>(0, (sum, child) => sum + child.totalSize);
+  }
+
+  double get progress {
+    if (!isDirectory && file != null) {
+      return file!.progress;
+    }
+    final size = totalSize;
+    if (size <= 0) return 0.0;
+    final downloaded = children.fold<double>(
+      0.0,
+      (sum, child) => sum + (child.totalSize * child.progress),
+    );
+    return (downloaded / size).clamp(0.0, 1.0);
+  }
+
+  String get priority {
+    if (!isDirectory && file != null) {
+      return file!.priority;
+    }
+    if (children.isEmpty) return 'Normal';
+    final firstPriority = children.first.priority;
+    final allSame = children.every((child) => child.priority == firstPriority);
+    return allSame ? firstPriority : 'Mixed';
+  }
+}
+
+class _VisibleTreeItem {
+  final FileTreeNode node;
+  final int depth;
+
+  _VisibleTreeItem(this.node, this.depth);
+}
+
 class TorrentFilesTab extends StatefulWidget {
   final String infoHash;
   final String torrentName;
@@ -28,8 +80,11 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
   final TextEditingController _searchController = TextEditingController();
   String _searchFilter = '';
 
-  int? _sortColumnIndex = 0; // Default sort by File Name
+  int? _sortColumnIndex = 0; // Default sort by Name
   bool _isAscending = true;
+
+  final Set<String> _expandedPaths = {};
+  bool _hasAutoExpanded = false;
 
   @override
   void initState() {
@@ -52,6 +107,8 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
         _error = null;
         _searchFilter = '';
         _searchController.clear();
+        _expandedPaths.clear();
+        _hasAutoExpanded = false;
       });
       _fetchFiles();
     }
@@ -91,24 +148,143 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
     });
   }
 
-  List<TorrentFileItem> _getFilteredAndSortedFiles(List<TorrentFileItem> list) {
-    var filtered = list;
-    if (_searchFilter.isNotEmpty) {
-      final query = _searchFilter.toLowerCase();
-      filtered = list.where((f) => f.name.toLowerCase().contains(query)).toList();
+  String _sanitizeRelativePath(String rawPath, String torrentName) {
+    var p = rawPath.replaceAll(r'\', '/').trim();
+    while (p.startsWith('/')) {
+      p = p.substring(1).trim();
     }
 
-    if (_sortColumnIndex == null) return filtered;
+    if (torrentName.trim().isNotEmpty) {
+      final name = torrentName.trim();
+      final idx = p.indexOf(name);
+      if (idx != -1) {
+        p = p.substring(idx);
+      }
+    }
 
-    final sorted = List<TorrentFileItem>.from(filtered);
-    sorted.sort((a, b) {
+    // Strip common system path prefixes if present
+    final systemPrefixes = ['home/', 'Users/', 'root/', 'var/', 'tmp/'];
+    for (final pref in systemPrefixes) {
+      if (p.startsWith(pref)) {
+        final parts = p.split('/');
+        if (parts.length > 3) {
+          p = parts.sublist(3).join('/');
+        } else if (parts.length > 2) {
+          p = parts.sublist(2).join('/');
+        }
+        break;
+      }
+    }
+
+    return p;
+  }
+
+  FileTreeNode _findOrCreateDirInList(
+    List<FileTreeNode> list,
+    String dirName,
+    String fullPath,
+  ) {
+    for (final item in list) {
+      if (item.isDirectory && item.name == dirName) {
+        return item;
+      }
+    }
+    final newDir = FileTreeNode(
+      name: dirName,
+      fullPath: fullPath,
+      isDirectory: true,
+    );
+    list.add(newDir);
+    return newDir;
+  }
+
+  List<FileTreeNode> _buildFileTree(List<TorrentFileItem> files) {
+    final rootNodes = <FileTreeNode>[];
+
+    for (final file in files) {
+      final cleanPath = _sanitizeRelativePath(file.path, widget.torrentName);
+      final segments = cleanPath
+          .split('/')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+
+      if (segments.isEmpty) {
+        rootNodes.add(FileTreeNode(
+          name: file.name.isNotEmpty ? file.name : 'file_${file.id}',
+          fullPath: file.path,
+          isDirectory: false,
+          file: file,
+        ));
+        continue;
+      }
+
+      List<FileTreeNode> currentList = rootNodes;
+      String currentPath = '';
+
+      for (int i = 0; i < segments.length; i++) {
+        final segment = segments[i];
+        currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
+        final isLast = (i == segments.length - 1);
+
+        if (isLast) {
+          currentList.add(FileTreeNode(
+            name: segment,
+            fullPath: currentPath,
+            isDirectory: false,
+            file: file,
+          ));
+        } else {
+          final dirNode = _findOrCreateDirInList(currentList, segment, currentPath);
+          currentList = dirNode.children;
+        }
+      }
+    }
+
+    // Auto-expand all folders on initial load so user sees structure
+    if (!_hasAutoExpanded && rootNodes.isNotEmpty) {
+      void expandAll(List<FileTreeNode> nodes) {
+        for (final node in nodes) {
+          if (node.isDirectory) {
+            _expandedPaths.add(node.fullPath);
+            expandAll(node.children);
+          }
+        }
+      }
+
+      expandAll(rootNodes);
+      _hasAutoExpanded = true;
+    }
+
+    return rootNodes;
+  }
+
+  bool _nodeMatchesSearch(FileTreeNode node) {
+    if (_searchFilter.isEmpty) return true;
+    final q = _searchFilter.toLowerCase();
+    if (node.name.toLowerCase().contains(q)) return true;
+    if (node.isDirectory) {
+      return node.children.any((c) => _nodeMatchesSearch(c));
+    }
+    return false;
+  }
+
+  void _sortTreeNodes(List<FileTreeNode> nodes) {
+    if (_sortColumnIndex == null) return;
+
+    nodes.sort((a, b) {
+      // Keep directories before files
+      if (a.isDirectory != b.isDirectory) {
+        return a.isDirectory ? -1 : 1;
+      }
+
       final int cmp;
       switch (_sortColumnIndex) {
-        case 0: // File Name
+        case 0: // Name
           cmp = a.name.toLowerCase().compareTo(b.name.toLowerCase());
           break;
         case 1: // Size
-          cmp = a.size.compareTo(b.size);
+          cmp = a.totalSize.compareTo(b.totalSize);
           break;
         case 2: // Progress
           cmp = a.progress.compareTo(b.progress);
@@ -121,7 +297,53 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
       }
       return _isAscending ? cmp : -cmp;
     });
-    return sorted;
+
+    for (final node in nodes) {
+      if (node.isDirectory && node.children.isNotEmpty) {
+        _sortTreeNodes(node.children);
+      }
+    }
+  }
+
+  List<_VisibleTreeItem> _getVisibleTreeItems(List<FileTreeNode> rootNodes) {
+    final result = <_VisibleTreeItem>[];
+
+    void traverse(List<FileTreeNode> nodes, int depth) {
+      for (final node in nodes) {
+        if (!_nodeMatchesSearch(node)) continue;
+
+        result.add(_VisibleTreeItem(node, depth));
+
+        if (node.isDirectory) {
+          final isExpanded = _expandedPaths.contains(node.fullPath) || _searchFilter.isNotEmpty;
+          if (isExpanded) {
+            traverse(node.children, depth + 1);
+          }
+        }
+      }
+    }
+
+    traverse(rootNodes, 0);
+    return result;
+  }
+
+  void _toggleExpandAll(List<FileTreeNode> rootNodes) {
+    setState(() {
+      if (_expandedPaths.isNotEmpty) {
+        _expandedPaths.clear();
+      } else {
+        void expandAll(List<FileTreeNode> nodes) {
+          for (final node in nodes) {
+            if (node.isDirectory) {
+              _expandedPaths.add(node.fullPath);
+              expandAll(node.children);
+            }
+          }
+        }
+
+        expandAll(rootNodes);
+      }
+    });
   }
 
   IconData _getFileIcon(String fileName) {
@@ -210,7 +432,6 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
       );
     }
 
-    final filteredFiles = _getFilteredAndSortedFiles(rawFiles);
     final totalBytes = rawFiles.fold<int>(0, (sum, f) => sum + f.size);
 
     final headerStyle = TextStyle(
@@ -227,10 +448,16 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
       fontSize: 11,
     );
 
+    // Build hierarchical folder tree
+    final treeNodes = _buildFileTree(rawFiles);
+    _sortTreeNodes(treeNodes);
+
+    final visibleTreeItems = _getVisibleTreeItems(treeNodes);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Summary & Search Toolbar
+        // Summary & Actions Toolbar
         Container(
           padding: const EdgeInsets.only(bottom: 8),
           child: Row(
@@ -239,7 +466,49 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
                 '${rawFiles.length} file${rawFiles.length == 1 ? '' : 's'} (${formatBytesDynamic(totalBytes.toString())})',
                 style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 11),
               ),
+              const SizedBox(width: 14),
+
+              // Expand / Collapse All Folders Button
+              Tooltip(
+                message: _expandedPaths.isNotEmpty ? 'Collapse All Folders' : 'Expand All Folders',
+                child: InkWell(
+                  onTap: () => _toggleExpandAll(treeNodes),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                    decoration: BoxDecoration(
+                      color: colors.dataCardBackgroundColor,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: colors.dataCardBorderColor, width: 0.8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _expandedPaths.isNotEmpty
+                              ? Icons.unfold_less
+                              : Icons.unfold_more,
+                          size: 13,
+                          color: colors.tableSecondaryTextColor,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _expandedPaths.isNotEmpty ? 'Collapse All' : 'Expand All',
+                          style: TextStyle(
+                            color: colors.tableSecondaryTextColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
               const Spacer(),
+
+              // Search Filter Bar
               SizedBox(
                 width: 180,
                 height: 26,
@@ -287,7 +556,7 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
           ),
         ),
 
-        // Files Table
+        // Files Tree Table
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -309,7 +578,7 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
                           WidgetStateProperty.all(colors.tableHeaderBackgroundColor),
                       columns: [
                         DataColumn(
-                          label: Text('File Name', style: headerStyle),
+                          label: Text('Name', style: headerStyle),
                           onSort: _onSort,
                         ),
                         DataColumn(
@@ -326,34 +595,85 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
                           onSort: _onSort,
                         ),
                       ],
-                      rows: filteredFiles.map((file) {
+                      rows: visibleTreeItems.map((item) {
+                        final node = item.node;
+                        final depth = item.depth;
+                        final isDirectory = node.isDirectory;
+                        final isExpanded = _expandedPaths.contains(node.fullPath);
+
                         return DataRow(
                           cells: [
+                            // Name column with folder tree hierarchy, indent & click-to-expand
                             DataCell(
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    _getFileIcon(file.name),
-                                    size: 14,
-                                    color: colors.tableSecondaryTextColor,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    file.name,
-                                    style: fileNameStyle,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
+                              InkWell(
+                                onTap: isDirectory
+                                    ? () {
+                                        setState(() {
+                                          if (isExpanded) {
+                                            _expandedPaths.remove(node.fullPath);
+                                          } else {
+                                            _expandedPaths.add(node.fullPath);
+                                          }
+                                        });
+                                      }
+                                    : null,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(width: depth * 18.0),
+                                    if (isDirectory) ...[
+                                      Icon(
+                                        isExpanded
+                                            ? Icons.arrow_drop_down
+                                            : Icons.arrow_right,
+                                        size: 18,
+                                        color: colors.tableSecondaryTextColor,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Icon(
+                                        isExpanded
+                                            ? Icons.folder_open
+                                            : Icons.folder,
+                                        size: 16,
+                                        color: colors.accentAmberColor,
+                                      ),
+                                    ] else ...[
+                                      const SizedBox(width: 20),
+                                      Icon(
+                                        _getFileIcon(node.name),
+                                        size: 14,
+                                        color: colors.tableSecondaryTextColor,
+                                      ),
+                                    ],
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      node.name,
+                                      style: isDirectory
+                                          ? TextStyle(
+                                              color: colors.tablePrimaryTextColor,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.bold,
+                                            )
+                                          : fileNameStyle,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
+
+                            // Size
                             DataCell(
                               Text(
-                                formatBytesDynamic(file.size.toString()),
+                                formatBytesDynamic(node.totalSize.toString()),
                                 style: cellStyle,
                               ),
                             ),
-                            DataCell(_buildProgressBar(context, file.progress)),
+
+                            // Progress
+                            DataCell(_buildProgressBar(context, node.progress)),
+
+                            // Priority
                             DataCell(
                               Container(
                                 padding: const EdgeInsets.symmetric(
@@ -363,10 +683,13 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
                                 decoration: BoxDecoration(
                                   color: colors.dataCardBackgroundColor,
                                   borderRadius: BorderRadius.circular(3),
-                                  border: Border.all(color: colors.dataCardBorderColor, width: 0.5),
+                                  border: Border.all(
+                                    color: colors.dataCardBorderColor,
+                                    width: 0.5,
+                                  ),
                                 ),
                                 child: Text(
-                                  file.priority,
+                                  node.priority,
                                   style: TextStyle(
                                     color: colors.tableSecondaryTextColor,
                                     fontSize: 10,

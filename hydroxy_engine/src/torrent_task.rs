@@ -80,6 +80,7 @@ impl TorrentTask {
             })
             .collect();
 
+        let root_dir_prefix = format!("{}/", self.root_dir.trim_end_matches('/'));
         let file_stats: Vec<TorrentFileStats> = file_map
             .iter()
             .enumerate()
@@ -88,10 +89,17 @@ impl TorrentTask {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| format!("file_{}", i));
+                let rel_path = region
+                    .path
+                    .strip_prefix(&root_dir_prefix)
+                    .or_else(|| region.path.strip_prefix(&self.root_dir))
+                    .unwrap_or(&region.path)
+                    .trim_start_matches('/')
+                    .to_string();
                 TorrentFileStats {
                     id: i,
                     name,
-                    path: region.path.clone(),
+                    path: rel_path,
                     size: region.length,
                     offset: region.offset_in_torrent,
                     progress: 0.0,

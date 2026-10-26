@@ -67,16 +67,16 @@ class TorrentDetailsPanel extends StatelessWidget {
                   onHeightChanged(newHeight);
                 },
                 child: Container(
-                  height: 5,
+                  height: 10,
                   width: double.infinity,
                   color: Colors.transparent,
                   alignment: Alignment.center,
                   child: Container(
-                    width: 48,
-                    height: 2,
+                    width: 56,
+                    height: 3,
                     decoration: BoxDecoration(
                       color: colors.detailsPanelResizeHandleColor,
-                      borderRadius: BorderRadius.circular(1),
+                      borderRadius: BorderRadius.circular(1.5),
                     ),
                   ),
                 ),
@@ -94,7 +94,23 @@ class TorrentDetailsPanel extends StatelessWidget {
                 _buildTabButton(context, 2, Icons.people_outline, 'Peers'),
                 _buildTabButton(context, 3, Icons.storage_outlined, 'HTTP Sources'),
                 _buildTabButton(context, 4, Icons.folder_open, 'Content'),
-                const Spacer(),
+                Expanded(
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.resizeRow,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onVerticalDragUpdate: (details) {
+                        final newHeight =
+                            (contentHeight - details.delta.dy).clamp(
+                              minHeight,
+                              maxHeight,
+                            );
+                        onHeightChanged(newHeight);
+                      },
+                      child: Container(color: Colors.transparent),
+                    ),
+                  ),
+                ),
                 IconButton(
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
