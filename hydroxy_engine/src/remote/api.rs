@@ -222,10 +222,8 @@ pub async fn get_torrent_detail(
             s.clone()
         } else if snap.total_pieces > 0 && snap.completed_pieces == snap.total_pieces {
             "completed".to_string()
-        } else if snap.active_peers > 0 {
-            "downloading".to_string()
         } else {
-            "paused".to_string()
+            "downloading".to_string()
         };
 
         Ok(Json(TorrentDetailApiItem {
@@ -549,10 +547,8 @@ fn snapshot_to_api_item(snap: TorrentStatsSnapshot) -> TorrentApiItem {
         s.clone()
     } else if snap.total_pieces > 0 && snap.completed_pieces == snap.total_pieces {
         "completed".to_string()
-    } else if snap.active_peers > 0 {
-        "downloading".to_string()
     } else {
-        "paused".to_string()
+        "downloading".to_string()
     };
 
     TorrentApiItem {

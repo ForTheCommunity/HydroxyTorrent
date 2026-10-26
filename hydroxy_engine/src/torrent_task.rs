@@ -179,7 +179,15 @@ impl TorrentTask {
         // Broadcast channel for notifying peer workers when pieces complete
         let (have_tx, _) = broadcast::channel::<u32>(128);
 
-        // Collect initial peers from all trackers
+        // Worker supervision via JoinSet
+        let mut worker_set: JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)> = JoinSet::new();
+
+        // Queue of discovered peers waiting for an open connection slot
+        let mut peer_pool: VecDeque<Peer> = VecDeque::new();
+
+        // Channel for announce tasks to stream newly discovered peers directly to the main loop
+        let (new_peer_tx, mut new_peer_rx) = mpsc::channel::<Vec<Peer>>(64);
+
         let (initial_downloaded, initial_remaining) = {
             let alloc = piece_allocator.lock().await;
             (
@@ -188,54 +196,27 @@ impl TorrentTask {
             )
         };
 
-        let initial_peers = Self::announce_to_trackers(
-            &trackers,
-            &info_hash,
-            session_peer_id,
-            initial_downloaded,
-            0,
-            initial_remaining,
-            Some(TrackerEvents::Started),
-            Some((&self.stats_registry, &info_hash_sha1)),
-        )
-        .await;
-        info!("Found Total Peers : {}", initial_peers.len());
-
-        // Worker supervision via JoinSet
-        let mut worker_set: JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)> = JoinSet::new();
-
-        // Queue of discovered peers waiting for an open connection slot
-        let mut peer_pool: VecDeque<Peer> = VecDeque::from(initial_peers);
-
-        // Spawn workers up to MAX_CONNECTED_PEERS_PER_TORRENT if not paused and not already complete
-        if !is_paused && !piece_allocator.lock().await.all_complete() {
-            while let Some(peer) = peer_pool.pop_front() {
-                if !Self::spawn_worker_if_new(
-                    &mut worker_set,
-                    &connected_peers,
-                    peer,
-                    info_hash,
+        // Announce to all trackers concurrently in parallel, streaming peers as each tracker responds
+        if !is_paused && !piece_allocator.lock().await.all_complete() && !trackers.is_empty() {
+            let init_trackers = trackers.clone();
+            let init_stats = Arc::clone(&self.stats_registry);
+            let init_hash_sha1 = info_hash_sha1.clone();
+            let init_peer_tx = new_peer_tx.clone();
+            tokio::spawn(async move {
+                Self::announce_to_trackers_stream(
+                    &init_trackers,
+                    &info_hash,
                     session_peer_id,
-                    total_pieces,
-                    piece_length,
-                    total_torrent_size,
-                    &piece_hashes,
-                    &piece_allocator,
-                    &file_map,
-                    &torrent_state,
-                    &self.stats_registry,
-                    have_tx.clone(),
+                    initial_downloaded,
+                    0,
+                    initial_remaining,
+                    Some(TrackerEvents::Started),
+                    Some((&init_stats, &init_hash_sha1)),
+                    &init_peer_tx,
                 )
-                .await
-                {
-                    peer_pool.push_front(peer);
-                    break;
-                }
-            }
+                .await;
+            });
         }
-
-        // Channel for the re-announce task to send newly discovered peers
-        let (new_peer_tx, mut new_peer_rx) = mpsc::channel::<Vec<Peer>>(16);
 
         // Spawn periodic re-announce background task
         let re_announce_trackers = trackers.clone();
@@ -243,6 +224,7 @@ impl TorrentTask {
         let re_announce_info_hash_sha1 = info_hash_sha1.clone();
         let re_announce_stats = Arc::clone(&self.stats_registry);
         let re_announce_allocator = Arc::clone(&piece_allocator);
+        let re_announce_peer_tx = new_peer_tx.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
@@ -277,7 +259,7 @@ impl TorrentTask {
                 }
 
                 info!("Re-announcing to trackers for fresh peers...");
-                let peers = Self::announce_to_trackers(
+                Self::announce_to_trackers_stream(
                     &re_announce_trackers,
                     &re_announce_info_hash,
                     session_peer_id,
@@ -286,15 +268,9 @@ impl TorrentTask {
                     remaining,
                     None,
                     Some((&re_announce_stats, &re_announce_info_hash_sha1)),
+                    &re_announce_peer_tx,
                 )
                 .await;
-
-                if !peers.is_empty() {
-                    info!("Re-announce discovered {} peers", peers.len());
-                    if new_peer_tx.send(peers).await.is_err() {
-                        break; // receiver dropped, torrent task exited
-                    }
-                }
             }
         });
 
@@ -369,6 +345,34 @@ impl TorrentTask {
                                         break;
                                     }
                                 }
+
+                                if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
+                                    let (dl, rem) = {
+                                        let alloc = piece_allocator.lock().await;
+                                        (
+                                            alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                            alloc.remaining_bytes(piece_length, total_torrent_size),
+                                        )
+                                    };
+                                    let resume_trackers = trackers.clone();
+                                    let resume_stats = Arc::clone(&self.stats_registry);
+                                    let resume_hash_sha1 = info_hash_sha1.clone();
+                                    let resume_peer_tx = new_peer_tx.clone();
+                                    tokio::spawn(async move {
+                                        Self::announce_to_trackers_stream(
+                                            &resume_trackers,
+                                            &info_hash,
+                                            session_peer_id,
+                                            dl,
+                                            0,
+                                            rem,
+                                            None,
+                                            Some((&resume_stats, &resume_hash_sha1)),
+                                            &resume_peer_tx,
+                                        )
+                                        .await;
+                                    });
+                                }
                             }
                         }
                         TorrentCommand::Recheck => {
@@ -430,6 +434,34 @@ impl TorrentTask {
                                         break;
                                     }
                                 }
+
+                                if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
+                                    let (dl, rem) = {
+                                        let alloc = piece_allocator.lock().await;
+                                        (
+                                            alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                            alloc.remaining_bytes(piece_length, total_torrent_size),
+                                        )
+                                    };
+                                    let resume_trackers = trackers.clone();
+                                    let resume_stats = Arc::clone(&self.stats_registry);
+                                    let resume_hash_sha1 = info_hash_sha1.clone();
+                                    let resume_peer_tx = new_peer_tx.clone();
+                                    tokio::spawn(async move {
+                                        Self::announce_to_trackers_stream(
+                                            &resume_trackers,
+                                            &info_hash,
+                                            session_peer_id,
+                                            dl,
+                                            0,
+                                            rem,
+                                            None,
+                                            Some((&resume_stats, &resume_hash_sha1)),
+                                            &resume_peer_tx,
+                                        )
+                                        .await;
+                                    });
+                                }
                             }
                         }
                         TorrentCommand::Reannounce => {
@@ -441,47 +473,25 @@ impl TorrentTask {
                                     alloc.remaining_bytes(piece_length, total_torrent_size),
                                 )
                             };
-                            let peers = Self::announce_to_trackers(
-                                &trackers,
-                                &info_hash,
-                                session_peer_id,
-                                downloaded,
-                                0,
-                                remaining,
-                                None,
-                                Some((&self.stats_registry, &info_hash_sha1)),
-                            )
-                            .await;
-                            for peer in peers {
-                                let is_connected = connected_peers.lock().await.contains(&(peer.ipv4_addr, peer.port));
-                                if !is_connected {
-                                    peer_pool.push_back(peer);
-                                }
-                            }
-                            if !is_paused && !piece_allocator.lock().await.all_complete() {
-                                while let Some(peer) = peer_pool.pop_front() {
-                                    if !Self::spawn_worker_if_new(
-                                        &mut worker_set,
-                                        &connected_peers,
-                                        peer,
-                                        info_hash,
+                            if !trackers.is_empty() {
+                                let re_trackers = trackers.clone();
+                                let re_stats = Arc::clone(&self.stats_registry);
+                                let re_hash_sha1 = info_hash_sha1.clone();
+                                let re_peer_tx = new_peer_tx.clone();
+                                tokio::spawn(async move {
+                                    Self::announce_to_trackers_stream(
+                                        &re_trackers,
+                                        &info_hash,
                                         session_peer_id,
-                                        total_pieces,
-                                        piece_length,
-                                        total_torrent_size,
-                                        &piece_hashes,
-                                        &piece_allocator,
-                                        &file_map,
-                                        &torrent_state,
-                                        &self.stats_registry,
-                                        have_tx.clone(),
+                                        downloaded,
+                                        0,
+                                        remaining,
+                                        None,
+                                        Some((&re_stats, &re_hash_sha1)),
+                                        &re_peer_tx,
                                     )
-                                    .await
-                                    {
-                                        peer_pool.push_front(peer);
-                                        break;
-                                    }
-                                }
+                                    .await;
+                                });
                             }
                         }
                     }
@@ -602,7 +612,7 @@ impl TorrentTask {
         Ok(())
     }
 
-    // Contact all trackers and collect peers.
+    // Contact all trackers concurrently and collect peers.
     async fn announce_to_trackers(
         trackers: &[String],
         info_hash: &[u8; 20],
@@ -613,75 +623,131 @@ impl TorrentTask {
         event: Option<TrackerEvents>,
         stats: Option<(&Arc<StatsRegistry>, &str)>,
     ) -> Vec<Peer> {
-        let mut peers: Vec<Peer> = Vec::new();
+        let (peers_tx, mut peers_rx) = mpsc::channel::<Vec<Peer>>(trackers.len().max(1));
 
-        for announce_url in trackers {
-            if let Some((reg, hash)) = stats {
+        Self::announce_to_trackers_stream(
+            trackers,
+            info_hash,
+            peer_id,
+            downloaded,
+            uploaded,
+            remaining_size,
+            event,
+            stats,
+            &peers_tx,
+        )
+        .await;
+
+        drop(peers_tx);
+
+        let mut all_peers = Vec::new();
+        while let Some(peers) = peers_rx.recv().await {
+            all_peers.extend(peers);
+        }
+
+        all_peers
+    }
+
+    // Announce to all trackers concurrently in parallel, streaming discovered peers as each responds.
+    async fn announce_to_trackers_stream(
+        trackers: &[String],
+        info_hash: &[u8; 20],
+        peer_id: [u8; 20],
+        downloaded: u64,
+        uploaded: u64,
+        remaining_size: u64,
+        event: Option<TrackerEvents>,
+        stats: Option<(&Arc<StatsRegistry>, &str)>,
+        peer_tx: &mpsc::Sender<Vec<Peer>>,
+    ) {
+        if trackers.is_empty() {
+            return;
+        }
+
+        // 1. Immediately mark ALL trackers as "Updating..." in stats registry.
+        // This ensures the Web-UI shows all trackers updating in parallel rather than inactive.
+        if let Some((reg, hash)) = stats {
+            for announce_url in trackers {
                 reg.update_tracker(hash, announce_url, "Updating...", None, None, None);
-            }
-            let tracker = Tracker {
-                announce_url: announce_url.clone(),
-                downloaded: downloaded as i64,
-                uploaded: uploaded as i64,
-                remaining_size: remaining_size as i64,
-                info_hash: *info_hash,
-                peer_id,
-                port: "9060".into(),
-                event,
-            };
-
-            match tracker.announce().await {
-                Ok(tracker_response) => {
-                    let peer_count = tracker_response.ipv4_peers.len();
-                    let interval = if tracker_response.interval > 0 {
-                        tracker_response.interval as u64
-                    } else {
-                        120
-                    };
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let next_announce = now + interval;
-
-                    if let Some((reg, hash)) = stats {
-                        reg.update_tracker(
-                            hash,
-                            announce_url,
-                            "Working",
-                            Some(peer_count),
-                            Some(interval),
-                            Some(next_announce),
-                        );
-                    }
-                    peers.extend(tracker_response.ipv4_peers);
-                    info!(
-                        "found : {peer_count} peers from tracker -> {} (next announce in {}s)",
-                        announce_url, interval
-                    );
-                }
-                Err(e) => {
-                    let err_msg = format!("Error: {}", e);
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    if let Some((reg, hash)) = stats {
-                        reg.update_tracker(
-                            hash,
-                            announce_url,
-                            &err_msg,
-                            Some(0),
-                            None,
-                            Some(now + 60),
-                        );
-                    }
-                    warn!("ERROR -> {}", e.to_string());
-                }
             }
         }
 
-        peers
+        // 2. Launch concurrent announce tasks for all trackers in parallel
+        let mut join_set = JoinSet::new();
+
+        for announce_url in trackers {
+            let announce_url = announce_url.clone();
+            let info_hash = *info_hash;
+            let stats_opt = stats.map(|(reg, hash)| (Arc::clone(reg), hash.to_string()));
+            let peer_tx = peer_tx.clone();
+
+            join_set.spawn(async move {
+                let tracker = Tracker {
+                    announce_url: announce_url.clone(),
+                    downloaded: downloaded as i64,
+                    uploaded: uploaded as i64,
+                    remaining_size: remaining_size as i64,
+                    info_hash,
+                    peer_id,
+                    port: "9060".into(),
+                    event,
+                };
+
+                match tracker.announce().await {
+                    Ok(tracker_response) => {
+                        let peer_count = tracker_response.ipv4_peers.len();
+                        let interval = if tracker_response.interval > 0 {
+                            tracker_response.interval as u64
+                        } else {
+                            120
+                        };
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let next_announce = now + interval;
+
+                        if let Some((reg, hash)) = stats_opt.as_ref() {
+                            reg.update_tracker(
+                                hash,
+                                &announce_url,
+                                "Working",
+                                Some(peer_count),
+                                Some(interval),
+                                Some(next_announce),
+                            );
+                        }
+                        info!(
+                            "found : {peer_count} peers from tracker -> {} (next announce in {}s)",
+                            announce_url, interval
+                        );
+                        if !tracker_response.ipv4_peers.is_empty() {
+                            let _ = peer_tx.send(tracker_response.ipv4_peers).await;
+                        }
+                    }
+                    Err(e) => {
+                        let err_msg = format!("Error: {}", e);
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        if let Some((reg, hash)) = stats_opt.as_ref() {
+                            reg.update_tracker(
+                                hash,
+                                &announce_url,
+                                &err_msg,
+                                Some(0),
+                                None,
+                                Some(now + 60),
+                            );
+                        }
+                        warn!("ERROR -> {} on tracker: {}", e, announce_url);
+                    }
+                }
+            });
+        }
+
+        while join_set.join_next().await.is_some() {}
     }
 
     // Spawn a worker for a peer only if we don't already have an active
