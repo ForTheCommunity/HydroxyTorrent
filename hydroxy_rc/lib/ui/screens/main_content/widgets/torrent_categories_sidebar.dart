@@ -86,6 +86,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
 
   Map<String, int> _countStatuses(List<TorrentStructure> torrents) {
     int downloading = 0;
+    int stalled = 0;
     int seeding = 0;
     int completed = 0;
     int paused = 0;
@@ -94,8 +95,10 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
 
     for (final t in torrents) {
       final st = t.status.toLowerCase();
-      if (st == 'downloading' || st == 'stalled') {
+      if (st == 'downloading') {
         downloading++;
+      } else if (st == 'stalled') {
+        stalled++;
       } else if (st == 'seeding') {
         seeding++;
         completed++;
@@ -112,6 +115,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
 
     return {
       'downloading': downloading,
+      'stalled': stalled,
       'seeding': seeding,
       'completed': completed,
       'paused': paused,
@@ -221,6 +225,15 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
                             widget.selectedFilter == 'status:downloading',
                         onTap: () =>
                             widget.onFilterSelected('status:downloading'),
+                        depth: 1,
+                      ),
+                      _buildItem(
+                        label: 'Stalled',
+                        icon: Icons.pause_presentation_rounded,
+                        iconColor: colors.accentAmberColor,
+                        count: statusCounts['stalled'] ?? 0,
+                        isSelected: widget.selectedFilter == 'status:stalled',
+                        onTap: () => widget.onFilterSelected('status:stalled'),
                         depth: 1,
                       ),
                       _buildItem(
