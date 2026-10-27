@@ -599,10 +599,15 @@ impl PeerWorker {
                     info!("Piece {} written to disk", index);
                     self.stats_registry.piece_completed(&info_hash_sha1, self.ip_addr, self.port, index as usize);
 
-                    // update fast-resume state serialized under lock to prevent concurrent state task pileups
+                    // update hot_state serialized under lock to prevent concurrent state task pileups
                     {
+                        let snap = self.stats_registry.snapshot_torrent(&info_hash_sha1);
                         let mut state = self.torrent_state.lock().await;
                         state.mark_completed_piece(index as usize);
+                        if let Some(s) = snap {
+                            state.total_downloaded = state.total_downloaded.max(s.downloaded_bytes);
+                            state.total_uploaded = state.total_uploaded.max(s.uploaded_bytes);
+                        }
                         let snapshot = state.clone();
                         if let Err(e) = TorrentState::save_state(snapshot).await {
                             warn!("State save failed after piece {}: {}", index, e);

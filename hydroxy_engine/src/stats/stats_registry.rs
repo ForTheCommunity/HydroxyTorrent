@@ -238,6 +238,13 @@ impl StatsRegistry {
         }
     }
 
+    /// Set initial uploaded bytes from saved state.
+    pub fn set_uploaded_bytes(&self, info_hash: &str, uploaded_bytes: u64) {
+        if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
+            torrent.uploaded_bytes = uploaded_bytes;
+        }
+    }
+
     /// Update status, peer count, interval, and next announce time for a tracker URL.
     pub fn update_tracker(
         &self,

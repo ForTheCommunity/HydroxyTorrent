@@ -156,6 +156,7 @@ impl TorrentTask {
             .await;
 
             hot_state.pieces = recheck.bitfield;
+            hot_state.total_downloaded = recheck.completed_bytes;
             let _ = TorrentState::save_state(hot_state.clone()).await;
             self.stats_registry.set_initial_bitfield(
                 &info_hash_sha1,
@@ -180,12 +181,25 @@ impl TorrentTask {
             )
         };
 
+        let initial_downloaded_bytes = hot_state
+            .total_downloaded
+            .max(completed_bytes)
+            .min(total_torrent_size);
+        let initial_uploaded_bytes = hot_state.total_uploaded;
+
+        if hot_state.total_downloaded != initial_downloaded_bytes {
+            hot_state.total_downloaded = initial_downloaded_bytes;
+            let _ = TorrentState::save_state(hot_state.clone()).await;
+        }
+
         self.stats_registry.set_initial_bitfield(
             &info_hash_sha1,
             &hot_state.pieces,
             completed_pieces,
-            completed_bytes,
+            initial_downloaded_bytes,
         );
+        self.stats_registry
+            .set_uploaded_bytes(&info_hash_sha1, initial_uploaded_bytes);
 
         let mut is_paused = hot_state.paused == 1;
         let is_sequential = hot_state.sequential == 1;
@@ -271,7 +285,7 @@ impl TorrentTask {
                     session_peer_id,
                     port,
                     initial_downloaded,
-                    0,
+                    initial_uploaded_bytes,
                     initial_remaining,
                     Some(TrackerEvents::Started),
                     Some((&init_stats, &init_hash_sha1)),
@@ -383,6 +397,20 @@ impl TorrentTask {
         loop {
             tokio::select! {
                 _ = stall_check_interval.tick() => {
+                    // Periodically persist updated uploaded/downloaded byte totals to .hot_state (especially while seeding)
+                    if let Some(snap) = self.stats_registry.snapshot_torrent(&info_hash_sha1) {
+                        let mut state = torrent_state.lock().await;
+                        let new_dl = state.total_downloaded.max(snap.downloaded_bytes).min(total_torrent_size);
+                        let new_ul = state.total_uploaded.max(snap.uploaded_bytes);
+                        if new_dl != state.total_downloaded || new_ul != state.total_uploaded {
+                            state.total_downloaded = new_dl;
+                            state.total_uploaded = new_ul;
+                            let snapshot = state.clone();
+                            drop(state);
+                            let _ = TorrentState::save_state(snapshot).await;
+                        }
+                    }
+
                     // Only evaluate stall for actively downloading torrents that have not completed
                     if has_download_slot && !is_paused {
                         let is_done = piece_allocator.lock().await.all_complete();
@@ -448,6 +476,14 @@ impl TorrentTask {
                             peer_pool.shrink_to_fit();
                             self.inbound_registry.unregister(&info_hash).await;
                             self.queue_manager.release_download_slot(&info_hash).await;
+                            if cmd == TorrentCommand::Shutdown {
+                                if let Some(snap) = self.stats_registry.snapshot_torrent(&info_hash_sha1) {
+                                    let mut state = torrent_state.lock().await;
+                                    state.total_downloaded = state.total_downloaded.max(snap.downloaded_bytes).min(total_torrent_size);
+                                    state.total_uploaded = state.total_uploaded.max(snap.uploaded_bytes);
+                                    let _ = TorrentState::save_state(state.clone()).await;
+                                }
+                            }
                             break;
                         }
                         TorrentCommand::Pause => {
@@ -463,8 +499,14 @@ impl TorrentTask {
                             connected_peers.lock().await.clear();
                             self.stats_registry.clear_peers(&info_hash_sha1);
                             self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
+                            let snap = self.stats_registry.snapshot_torrent(&info_hash_sha1);
                             let mut state = torrent_state.lock().await;
                             state.paused = 1;
+                            if let Some(ref s) = snap {
+                                state.total_downloaded = state.total_downloaded.max(s.downloaded_bytes).min(total_torrent_size);
+                                state.total_uploaded = state.total_uploaded.max(s.uploaded_bytes);
+                            }
+                            let ul = state.total_uploaded;
                             let _ = TorrentState::save_state(state.clone()).await;
 
                             if !trackers.is_empty() {
@@ -484,7 +526,7 @@ impl TorrentTask {
                                         session_peer_id,
                                         pause_port,
                                         dl,
-                                        0,
+                                        ul,
                                         rem,
                                         Some(TrackerEvents::Stopped),
                                         None,
@@ -612,6 +654,7 @@ impl TorrentTask {
                             {
                                 let mut state = torrent_state.lock().await;
                                 state.pieces = recheck.bitfield.clone();
+                                state.total_downloaded = recheck.completed_bytes;
                                 let _ = TorrentState::save_state(state.clone()).await;
                             }
                             {

@@ -7,6 +7,20 @@ pub fn encode(data: &BencodedValue) -> Vec<u8> {
     buffer
 }
 
+/// Encodes a bencoded dictionary preserving the exact key order provided in `entries`.
+pub fn encode_ordered_dict(entries: &[(&[u8], BencodedValue)]) -> Vec<u8> {
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.push(b'd');
+    for (key, value) in entries {
+        buffer.extend_from_slice(key.len().to_string().as_bytes());
+        buffer.push(b':');
+        buffer.extend_from_slice(key);
+        encode_data(value, &mut buffer);
+    }
+    buffer.push(b'e');
+    buffer
+}
+
 fn encode_data(data: &BencodedValue, buffer: &mut Vec<u8>) {
     match data {
         BencodedValue::Integer(i) => {
