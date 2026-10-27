@@ -154,6 +154,13 @@ impl StatsRegistry {
         }
     }
 
+    /// Clear all peer stats for a torrent (e.g. when pausing, rechecking, or stopping all workers).
+    pub fn clear_peers(&self, info_hash: &str) {
+        if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
+            torrent.peers_stats.clear();
+        }
+    }
+
     /// Called by HTTP API to fetch all active torrent metrics.
     pub fn snapshot_all(&self) -> Vec<TorrentStatsSnapshot> {
         self.torrents

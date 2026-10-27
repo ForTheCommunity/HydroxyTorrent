@@ -637,9 +637,13 @@ pub async fn read_log_tail(
     Ok(lines[start..].join("\n"))
 }
 
-pub async fn shutdown_daemon() -> impl IntoResponse {
-    tokio::spawn(async {
-        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+pub async fn shutdown_daemon(
+    State(state): State<Arc<ServerState>>,
+) -> impl IntoResponse {
+    let controls = Arc::clone(&state.torrent_controls);
+    tokio::spawn(async move {
+        controls.broadcast_command(TorrentCommand::Shutdown).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         std::process::exit(0);
     });
 

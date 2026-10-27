@@ -436,12 +436,14 @@ impl TorrentTask {
                         }
                     };
                     match cmd {
-                        TorrentCommand::Remove => {
-                            info!("Removing torrent task: {}", info_hash_sha1);
+                        TorrentCommand::Remove | TorrentCommand::Shutdown => {
+                            info!("Stopping torrent task ({:?}): {}", cmd, info_hash_sha1);
                             is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                             re_announce_handle.abort();
                             worker_set.shutdown().await;
+                            piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
+                            self.stats_registry.clear_peers(&info_hash_sha1);
                             peer_pool.clear();
                             peer_pool.shrink_to_fit();
                             self.inbound_registry.unregister(&info_hash).await;
@@ -457,7 +459,9 @@ impl TorrentTask {
                             is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                             self.queue_manager.release_download_slot(&info_hash).await;
                             worker_set.shutdown().await;
+                            piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
+                            self.stats_registry.clear_peers(&info_hash_sha1);
                             self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
                             let mut state = torrent_state.lock().await;
                             state.paused = 1;
@@ -505,6 +509,10 @@ impl TorrentTask {
                             let mut state = torrent_state.lock().await;
                             state.paused = 0;
                             let _ = TorrentState::save_state(state.clone()).await;
+                            drop(state);
+
+                            // Ensure any stale Downloading piece states are reset to Missing on resume
+                            piece_allocator.lock().await.reset_in_progress();
 
                             let all_done = piece_allocator.lock().await.all_complete();
                             if all_done {
@@ -554,7 +562,7 @@ impl TorrentTask {
                                     }
                                 }
 
-                                if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
+                                if worker_set.len() < MAX_CONNECTED_PEERS_PER_TORRENT / 2 && !trackers.is_empty() {
                                     let (dl, rem) = {
                                         let alloc = piece_allocator.lock().await;
                                         (
@@ -588,7 +596,9 @@ impl TorrentTask {
                         TorrentCommand::Recheck => {
                             info!("Force recheck initiated for: {}", info_hash_sha1);
                             worker_set.shutdown().await;
+                            piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
+                            self.stats_registry.clear_peers(&info_hash_sha1);
                             self.stats_registry.set_status(&info_hash_sha1, Some("checking".to_string()));
 
                             let recheck = crate::piece_verifier::verify_torrent_data_on_disk(
@@ -606,7 +616,9 @@ impl TorrentTask {
                             }
                             {
                                 let mut alloc = piece_allocator.lock().await;
+                                let seq = alloc.sequential;
                                 *alloc = PieceAllocator::from_hotstate_bitfield(&recheck.bitfield, total_pieces);
+                                alloc.sequential = seq;
                             }
                             self.stats_registry.set_initial_bitfield(
                                 &info_hash_sha1,
@@ -1201,6 +1213,9 @@ impl TorrentTask {
                 connected_peers: connected_peers_clone,
                 peer_tx,
                 last_sent_pex_peers: HashSet::new(),
+                active_piece_guard: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
+                last_block_time: None,
+                last_stalled_piece: None,
             };
 
             let result = worker.start_inbound(stream, remote_peer_id).await;
@@ -1292,6 +1307,9 @@ impl TorrentTask {
                 connected_peers: connected_peers_clone,
                 peer_tx,
                 last_sent_pex_peers: HashSet::new(),
+                active_piece_guard: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
+                last_block_time: None,
+                last_stalled_piece: None,
             };
 
             let result = worker.start().await;

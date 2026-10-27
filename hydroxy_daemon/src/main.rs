@@ -288,4 +288,8 @@ async fn run_daemon() {
     // Keep process alive until Ctrl+C / SIGTERM
     tokio::signal::ctrl_c().await.unwrap();
     info!("Shutdown signal received, closing Hydroxy Torrent...");
+    control_registry
+        .broadcast_command(hydroxy_engine::control::TorrentCommand::Shutdown)
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 }

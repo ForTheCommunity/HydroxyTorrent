@@ -90,6 +90,7 @@ impl TorrentState {
 
     pub async fn save_state(state: Self) -> Result<(), StateError> {
         let file_name = format!("{}.hot_state", &state.info_hash);
+        let tmp_file_name = format!("{}.hot_state.tmp", &state.info_hash);
         let bencoded_data: BencodedValue = state.into();
         let encoded_data = encode(&bencoded_data);
 
@@ -98,8 +99,12 @@ impl TorrentState {
             std::fs::create_dir_all(&state_dir)?;
         }
         let file_path = state_dir.join(file_name);
+        let tmp_path = state_dir.join(tmp_file_name);
 
-        std::fs::write(file_path, &encoded_data)?;
+        // Write to a temporary file first and atomically rename over the target state file
+        // so an unexpected exit or crash mid-write can never corrupt or truncate `.hot_state`.
+        std::fs::write(&tmp_path, &encoded_data)?;
+        std::fs::rename(&tmp_path, &file_path)?;
         Ok(())
     }
 

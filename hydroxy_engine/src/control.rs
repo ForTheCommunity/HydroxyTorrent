@@ -9,6 +9,7 @@ pub enum TorrentCommand {
     Reannounce,
     SetSequential(bool),
     Remove,
+    Shutdown,
 }
 
 #[derive(Default)]
@@ -34,6 +35,17 @@ impl TorrentControlRegistry {
             entry.value().send(cmd).await.is_ok()
         } else {
             false
+        }
+    }
+
+    pub async fn broadcast_command(&self, cmd: TorrentCommand) {
+        let senders: Vec<mpsc::Sender<TorrentCommand>> = self
+            .controllers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        for tx in senders {
+            let _ = tx.send(cmd.clone()).await;
         }
     }
 }

@@ -2,8 +2,11 @@
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr},
-    sync::Arc,
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use hydroxy_peer_wire_proto::{handshake::Handshake, message::PeerMessage};
@@ -25,6 +28,43 @@ use crate::{
     stats::stats_registry::StatsRegistry,
 };
 use hydroxy_utils::{parse_peer_id, torrent_info::OtherInfos};
+
+const PIECE_STALL_TIMEOUT: Duration = Duration::from_secs(20);
+const STALLED_PIECE_COOLDOWN: Duration = Duration::from_secs(5);
+const IDLE_UNCHOKED_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const IDLE_CHOKED_WAIT_INTERVAL: Duration = Duration::from_secs(30);
+
+struct PeerSessionGuard {
+    stats_registry: Arc<StatsRegistry>,
+    info_hash_sha1: String,
+    ip_addr: IpAddr,
+    port: u16,
+    writer_handle: Option<tokio::task::JoinHandle<()>>,
+    piece_allocator: Arc<Mutex<PieceAllocator>>,
+    active_piece: Arc<AtomicU32>,
+}
+
+impl Drop for PeerSessionGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.writer_handle.take() {
+            handle.abort();
+        }
+        self.stats_registry
+            .peer_disconnected(&self.info_hash_sha1, self.ip_addr, self.port);
+
+        let piece_idx = self.active_piece.swap(u32::MAX, Ordering::Relaxed);
+        if piece_idx != u32::MAX {
+            if let Ok(mut alloc) = self.piece_allocator.try_lock() {
+                alloc.release_piece(piece_idx as usize);
+            } else {
+                let alloc_clone = Arc::clone(&self.piece_allocator);
+                tokio::spawn(async move {
+                    alloc_clone.lock().await.release_piece(piece_idx as usize);
+                });
+            }
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct PeerState {
@@ -61,6 +101,9 @@ pub struct PeerWorker {
     pub connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
     pub peer_tx: mpsc::Sender<Vec<Peer>>,
     pub last_sent_pex_peers: HashSet<(Ipv4Addr, u16)>,
+    pub active_piece_guard: Arc<AtomicU32>,
+    pub last_block_time: Option<Instant>,
+    pub last_stalled_piece: Option<(u32, Instant)>,
 }
 
 impl PeerWorker {
@@ -94,6 +137,12 @@ impl PeerWorker {
         self.run_with_stream(tcp_stream, remote_peer_id).await
     }
 
+    fn set_current_piece(&mut self, piece: Option<u32>) {
+        self.current_piece = piece;
+        let raw = piece.unwrap_or(u32::MAX);
+        self.active_piece_guard.store(raw, Ordering::Relaxed);
+    }
+
     async fn run_with_stream(
         mut self,
         mut tcp_stream: TcpStream,
@@ -101,16 +150,16 @@ impl PeerWorker {
     ) -> Result<(), EngineError> {
         let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
 
-        let (our_bitfield, has_missing) = {
+        let (our_bitfield, has_incomplete) = {
             let alloc = self.piece_allocator.lock().await;
             (
                 alloc.to_bitfield(self.total_pieces),
-                alloc.pieces.iter().any(|p| matches!(p, PieceStatus::Missing)),
+                alloc.has_incomplete_pieces(),
             )
         };
 
         self.peer_state.am_choking = false;
-        if has_missing {
+        if has_incomplete {
             self.peer_state.am_interested = true;
         }
         let supports_extensions = self.supports_extensions;
@@ -137,8 +186,8 @@ impl PeerWorker {
             // Unchoke the remote peer immediately per BEP 0003 so they can request data from us
             PeerMessage::Unchoke.write(&mut tcp_stream).await?;
 
-            // Express interest if we have missing pieces
-            if has_missing {
+            // Express interest if we have incomplete pieces
+            if has_incomplete {
                 PeerMessage::Interested.write(&mut tcp_stream).await?;
             }
 
@@ -202,15 +251,25 @@ impl PeerWorker {
             }
         });
 
+        // RAII guard ensures writer_handle is aborted, peer_disconnected is recorded,
+        // and any in-flight piece is released back to the allocator even if this task
+        // is aborted (e.g. via JoinSet::shutdown on Pause/Recheck) or panics.
+        let _session_guard = PeerSessionGuard {
+            stats_registry: Arc::clone(&self.stats_registry),
+            info_hash_sha1: info_hash_sha1.clone(),
+            ip_addr: self.ip_addr,
+            port: self.port,
+            writer_handle: Some(writer_handle),
+            piece_allocator: Arc::clone(&self.piece_allocator),
+            active_piece: Arc::clone(&self.active_piece_guard),
+        };
+
         let result = self.run_loop(&mut read_half, &out_tx, &info_hash_sha1).await;
-        writer_handle.abort();
 
-        self.stats_registry.peer_disconnected(&info_hash_sha1, self.ip_addr, self.port);
-
-        // RAII cleanup: release any in-progress piece back to the pool
-        // so other workers can claim it. This runs on any exit path
-        // (timeout, error, disconnect, etc.)
-        if let Some(piece_idx) = self.current_piece.take() {
+        // Cleanly release any in-progress piece back to the pool on normal return
+        if let Some(piece_idx) = self.current_piece {
+            self.set_current_piece(None);
+            self.last_block_time = None;
             self.piece_allocator
                 .lock()
                 .await
@@ -232,46 +291,80 @@ impl PeerWorker {
         out_tx: &mpsc::Sender<PeerMessage>,
         info_hash_sha1: &str,
     ) -> Result<(), EngineError> {
-        let mut last_pex_sent = std::time::Instant::now();
+        let mut last_pex_sent = Instant::now();
         let pex_period = Duration::from_secs(60);
 
         loop {
-            // IMPORTANT: Do NOT wrap PeerMessage::read inside a tokio::select! with a timer.
-            // PeerMessage::read performs multiple sequential read_exact calls; cancelling it
-            // mid-message when a timer ticks desynchronizes the TCP stream and drops the peer.
-            let read_timeout = if self.current_piece.is_some() {
-                Duration::from_secs(45)
+            // 1. Check if an active piece request has stalled (no Piece block received within PIECE_STALL_TIMEOUT).
+            // Tracking `last_block_time` separately ensures KeepAlive or PEX messages cannot mask a stalled piece request.
+            if let Some(piece_idx) = self.current_piece {
+                let stalled = self
+                    .last_block_time
+                    .map_or(true, |t| t.elapsed() >= PIECE_STALL_TIMEOUT);
+                if stalled {
+                    warn!(
+                        "Worker {}:{} piece {} request stalled ({}s no block data) — releasing piece back to pool",
+                        self.ip_addr,
+                        self.port,
+                        piece_idx,
+                        PIECE_STALL_TIMEOUT.as_secs()
+                    );
+                    self.set_current_piece(None);
+                    self.last_block_time = None;
+                    self.pending_requests = 0;
+                    self.requested_offset = 0;
+                    self.piece_assembler.clear_piece(piece_idx);
+                    self.piece_allocator
+                        .lock()
+                        .await
+                        .release_piece(piece_idx as usize);
+                    self.last_stalled_piece = Some((piece_idx, Instant::now()));
+                }
+            }
+
+            // 2. If unchoked and idle, check if a missing piece is available to download.
+            // This wakes up idle seeders whenever another worker releases a stalled/choked piece.
+            if !self.peer_state.peer_choking && self.current_piece.is_none() {
+                self.try_start_downloading(out_tx).await?;
+            }
+
+            // 3. Wait for incoming data using `peek` so timeouts NEVER cancel `PeerMessage::read` mid-message
+            // and never desynchronize the TCP stream.
+            let wait_timeout = if self.current_piece.is_some() {
+                let elapsed = self
+                    .last_block_time
+                    .map(|t| t.elapsed())
+                    .unwrap_or(Duration::ZERO);
+                PIECE_STALL_TIMEOUT
+                    .saturating_sub(elapsed)
+                    .max(Duration::from_millis(200))
+            } else if !self.peer_state.peer_choking {
+                IDLE_UNCHOKED_POLL_INTERVAL
             } else {
-                Duration::from_secs(60)
+                IDLE_CHOKED_WAIT_INTERVAL
             };
 
-            match tokio::time::timeout(read_timeout, PeerMessage::read(read_half)).await {
-                Ok(msg_result) => {
-                    let peer_message = msg_result?;
-                    self.handle_message(peer_message, out_tx, info_hash_sha1).await?;
+            let mut peek_buf = [0u8; 1];
+            match tokio::time::timeout(wait_timeout, read_half.peek(&mut peek_buf)).await {
+                Ok(peek_res) => {
+                    peek_res?;
+                    let peer_message = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        PeerMessage::read(read_half),
+                    )
+                    .await
+                    .map_err(|_| EngineError::Timeout)??;
+                    self.handle_message(peer_message, out_tx, info_hash_sha1)
+                        .await?;
                 }
                 Err(_) => {
-                    if let Some(piece_idx) = self.current_piece.take() {
-                        warn!(
-                            "Worker {}:{} piece {} request stalled (45s no data) — releasing piece back to pool",
-                            self.ip_addr, self.port, piece_idx
-                        );
-                        self.piece_allocator
-                            .lock()
-                            .await
-                            .release_piece(piece_idx as usize);
-                        self.piece_assembler.clear_piece(piece_idx);
-                        self.pending_requests = 0;
-                        self.requested_offset = 0;
-                        self.try_start_downloading(out_tx).await?;
-                    } else {
-                        let _ = out_tx.send(PeerMessage::KeepAlive).await;
-                    }
+                    // Timeout on `peek` consumed 0 bytes from the TCP stream.
+                    // The top of the loop will now check piece stall / try_start_downloading.
                 }
             }
 
             if last_pex_sent.elapsed() >= pex_period {
-                last_pex_sent = std::time::Instant::now();
+                last_pex_sent = Instant::now();
                 if let Some(remote_id) = self.remote_ut_pex_id {
                     self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
                 }
@@ -299,7 +392,9 @@ impl PeerWorker {
                 );
 
                 // release the in-progress piece so another worker can claim it
-                if let Some(piece_idx) = self.current_piece.take() {
+                if let Some(piece_idx) = self.current_piece {
+                    self.set_current_piece(None);
+                    self.last_block_time = None;
                     self.piece_allocator
                         .lock()
                         .await
@@ -372,12 +467,12 @@ impl PeerWorker {
                 }
 
                 if !self.peer_state.am_interested {
-                    let is_missing = {
+                    let is_incomplete = {
                         let alloc = self.piece_allocator.lock().await;
                         (index as usize) < alloc.pieces.len()
-                            && matches!(alloc.pieces[index as usize], PieceStatus::Missing)
+                            && !matches!(alloc.pieces[index as usize], PieceStatus::Complete)
                     };
-                    if is_missing {
+                    if is_incomplete {
                         self.peer_state.am_interested = true;
                         let _ = out_tx.send(PeerMessage::Interested).await;
                     }
@@ -424,13 +519,11 @@ impl PeerWorker {
 
                 let has_useful = {
                     let piece_allocator = self.piece_allocator.lock().await;
-                    (0..self.total_pieces).any(|i| {
-                        PieceAllocator::check_piece(&self.peer_state.bitfield, i)
-                            && matches!(piece_allocator.pieces[i], PieceStatus::Missing)
-                    })
+                    piece_allocator
+                        .peer_has_incomplete_piece(&self.peer_state.bitfield, self.total_pieces)
                 };
 
-                if has_useful {
+                if has_useful && !self.peer_state.am_interested {
                     self.peer_state.am_interested = true;
                     let _ = out_tx.send(PeerMessage::Interested).await;
                 }
@@ -450,6 +543,7 @@ impl PeerWorker {
                     return Ok(());
                 }
 
+                self.last_block_time = Some(Instant::now());
                 self.pending_requests = self.pending_requests.saturating_sub(1);
                 self.stats_registry.record_download(
                     &info_hash_sha1,
@@ -478,14 +572,16 @@ impl PeerWorker {
 
                     if !PieceAssembler::verify_piece(&assembled, expected_hash) {
                         warn!("Piece {} failed SHA1 — releasing back to pool", index);
+                        self.set_current_piece(None);
+                        self.last_block_time = None;
+                        self.pending_requests = 0;
+                        self.requested_offset = 0;
+                        self.piece_assembler.clear_piece(index);
                         self.piece_allocator
                             .lock()
                             .await
                             .release_piece(index as usize);
-                        self.piece_assembler.clear_piece(index);
-                        self.current_piece = None;
-                        self.pending_requests = 0;
-                        self.requested_offset = 0;
+                        self.last_stalled_piece = Some((index, Instant::now()));
                         self.try_start_downloading(out_tx).await?;
                         return Ok(());
                     }
@@ -514,6 +610,8 @@ impl PeerWorker {
                     }
 
                     // mark complete in allocator
+                    self.set_current_piece(None);
+                    self.last_block_time = None;
                     self.piece_allocator
                         .lock()
                         .await
@@ -523,7 +621,6 @@ impl PeerWorker {
                     let _ = self.have_tx.send(index);
 
                     // move to next piece
-                    self.current_piece = None;
                     self.pending_requests = 0;
                     self.requested_offset = 0;
                     self.try_start_downloading(out_tx).await?;
@@ -689,14 +786,24 @@ impl PeerWorker {
             return Ok(());
         }
 
-        let piece_idx = self.piece_allocator.lock().await.allocate_piece(
+        let exclude_piece = match self.last_stalled_piece {
+            Some((idx, ts)) if ts.elapsed() < STALLED_PIECE_COOLDOWN => Some(idx as usize),
+            _ => {
+                self.last_stalled_piece = None;
+                None
+            }
+        };
+
+        let piece_idx = self.piece_allocator.lock().await.allocate_piece_excluding(
             &self.peer_state.bitfield,
             &self.ip_addr,
             self.total_pieces,
+            exclude_piece,
         );
 
         if let Some(piece_idx) = piece_idx {
-            self.current_piece = Some(piece_idx as u32);
+            self.set_current_piece(Some(piece_idx as u32));
+            self.last_block_time = Some(Instant::now());
             self.pending_requests = 0;
             self.requested_offset = 0;
             self.fill_pipeline(piece_idx as u32, out_tx).await?;

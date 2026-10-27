@@ -36,15 +36,31 @@ impl PieceAllocator {
 
     // picking the rarest piece that a peer has (or lowest index if sequential)
     // & marking it as downloading
+    #[allow(dead_code)]
     pub fn allocate_piece(
         &mut self,
         peer_bitfield: &[u8],
         peer_ip: &IpAddr,
         total_pieces: usize,
     ) -> Option<usize> {
+        self.allocate_piece_excluding(peer_bitfield, peer_ip, total_pieces, None)
+    }
+
+    // picking the rarest piece that a peer has (excluding a specific piece index if provided)
+    // & marking it as downloading
+    pub fn allocate_piece_excluding(
+        &mut self,
+        peer_bitfield: &[u8],
+        peer_ip: &IpAddr,
+        total_pieces: usize,
+        exclude_piece: Option<usize>,
+    ) -> Option<usize> {
         let limit = total_pieces.min(self.pieces.len());
         if self.sequential {
             for i in 0..limit {
+                if Some(i) == exclude_piece {
+                    continue;
+                }
                 if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
                 {
                     self.pieces[i] = PieceStatus::Downloading {
@@ -59,6 +75,9 @@ impl PieceAllocator {
         let mut best: Option<(usize, u32)> = None;
 
         for i in 0..limit {
+            if Some(i) == exclude_piece {
+                continue;
+            }
             if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
             {
                 let availability = self.piece_availability[i];
@@ -86,6 +105,28 @@ impl PieceAllocator {
         {
             self.pieces[piece_index] = PieceStatus::Missing;
         }
+    }
+
+    // Reset all in-progress (Downloading) pieces back to Missing (e.g. when pausing or shutting down workers).
+    pub fn reset_in_progress(&mut self) {
+        for piece in &mut self.pieces {
+            if matches!(piece, PieceStatus::Downloading { .. }) {
+                *piece = PieceStatus::Missing;
+            }
+        }
+    }
+
+    pub fn has_incomplete_pieces(&self) -> bool {
+        self.pieces
+            .iter()
+            .any(|p| !matches!(p, PieceStatus::Complete))
+    }
+
+    pub fn peer_has_incomplete_piece(&self, peer_bitfield: &[u8], total_pieces: usize) -> bool {
+        let limit = total_pieces.min(self.pieces.len());
+        (0..limit).any(|i| {
+            !matches!(self.pieces[i], PieceStatus::Complete) && Self::check_piece(peer_bitfield, i)
+        })
     }
 
     // mark PieceStatus::Complete when a piece is downloaded
@@ -254,5 +295,39 @@ mod tests {
         assert!(alloc.all_complete());
         assert_eq!(alloc.downloaded_bytes(piece_length, total_size), total_size);
         assert_eq!(alloc.remaining_bytes(piece_length, total_size), 0);
+    }
+
+    #[test]
+    fn test_reset_in_progress_and_allocate_excluding() {
+        let total = 2;
+        let mut alloc = PieceAllocator::new(total);
+        alloc.piece_availability = vec![5, 5];
+        let peer_bitfield = vec![0b11000000];
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // Complete piece 0, allocate piece 1 (last piece)
+        alloc.mark_complete(0);
+        let p = alloc.allocate_piece(&peer_bitfield, &ip, total);
+        assert_eq!(p, Some(1));
+        assert!(alloc.has_incomplete_pieces());
+        assert!(alloc.peer_has_incomplete_piece(&peer_bitfield, total));
+
+        // While piece 1 is Downloading, another allocation attempt returns None
+        assert_eq!(alloc.allocate_piece(&peer_bitfield, &ip, total), None);
+
+        // Simulate Pause/Shutdown resetting Downloading pieces back to Missing
+        alloc.reset_in_progress();
+        assert_eq!(alloc.pieces[1], PieceStatus::Missing);
+
+        // Excluding piece 1 returns None when piece 1 is the only missing piece
+        assert_eq!(
+            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, Some(1)),
+            None
+        );
+        // Another peer not excluding piece 1 can now allocate it
+        assert_eq!(
+            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, None),
+            Some(1)
+        );
     }
 }
