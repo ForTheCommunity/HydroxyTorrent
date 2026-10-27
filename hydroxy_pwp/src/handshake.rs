@@ -8,14 +8,27 @@ use crate::errors::PeerWireProtocolError;
 
 const PROTOCOL_HANDSHAKE_STRING: &'static str = "BitTorrent protocol";
 
+#[derive(Debug, Clone)]
 pub struct Handshake {
+    pub reserved: [u8; 8],
     pub info_hash: [u8; 20],
     pub peer_id: [u8; 20],
 }
 
 impl Handshake {
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
-        Self { info_hash, peer_id }
+        let mut reserved = [0u8; 8];
+        // BEP 10: Extension Protocol bit (20th bit from right of 64-bit reserved field, i.e., byte 5, bit 0x10)
+        reserved[5] |= 0x10;
+        Self {
+            reserved,
+            info_hash,
+            peer_id,
+        }
+    }
+
+    pub fn supports_extensions(&self) -> bool {
+        (self.reserved[5] & 0x10) != 0
     }
 
     pub fn to_bytes(&self) -> [u8; 68] {
@@ -24,8 +37,8 @@ impl Handshake {
         buffer[0] = PROTOCOL_HANDSHAKE_STRING.len() as u8;
         // Protocol Handshake String [ 19 Bytes]
         buffer[1..20].copy_from_slice(PROTOCOL_HANDSHAKE_STRING.as_bytes());
-        // {19 to 28} 8 Bytes are reserved/empty (used for extensions like DHT or UT_PEX).
-        // so it will be Zero for now,
+        // {20 to 28} 8 Bytes reserved (used for extensions like BEP 10 Extension Protocol / DHT / PEX).
+        buffer[20..28].copy_from_slice(&self.reserved);
         // Info Hash will take 20 Bytes {28 to 48}
         buffer[28..48].copy_from_slice(&self.info_hash);
         // Peer ID will take next 20 Bytes {48 to 68}
@@ -43,20 +56,23 @@ impl Handshake {
 
         if &bytes_buffer[1..20] != PROTOCOL_HANDSHAKE_STRING.as_bytes() {
             return Err(PeerWireProtocolError::InvalidHandshakeBytes(
-                "
-            Error validating Protocol String 
-            "
-                .into(),
+                "Error validating Protocol String".into(),
             ));
         }
 
+        let mut reserved = [0u8; 8];
         let mut info_hash = [0u8; 20];
         let mut peer_id = [0u8; 20];
 
+        reserved.copy_from_slice(&bytes_buffer[20..28]);
         info_hash.copy_from_slice(&bytes_buffer[28..48]);
         peer_id.copy_from_slice(&bytes_buffer[48..68]);
 
-        Ok(Handshake { info_hash, peer_id })
+        Ok(Handshake {
+            reserved,
+            info_hash,
+            peer_id,
+        })
     }
 
     pub async fn do_handshake(

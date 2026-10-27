@@ -12,6 +12,7 @@ pub struct InboundConnection {
     pub peer_ip: Ipv4Addr,
     pub peer_port: u16,
     pub remote_peer_id: [u8; 20],
+    pub supports_extensions: bool,
 }
 
 pub struct InboundTorrentRegistration {
@@ -119,6 +120,7 @@ impl PeerListener {
                                     peer_ip,
                                     peer_port,
                                     remote_peer_id: incoming.peer_id,
+                                    supports_extensions: incoming.supports_extensions(),
                                 }).await;
                             }
                         });

@@ -14,6 +14,7 @@ mod errors;
 mod manager;
 pub mod peer_listener;
 mod peer_worker;
+pub mod pex;
 mod piece_allocator;
 mod piece_assembler;
 pub mod piece_verifier;

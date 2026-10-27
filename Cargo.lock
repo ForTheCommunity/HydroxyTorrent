@@ -657,6 +657,7 @@ dependencies = [
  "axum",
  "base64",
  "dashmap",
+ "hydroxy_bencode",
  "hydroxy_config",
  "hydroxy_peer_wire_proto",
  "hydroxy_state",

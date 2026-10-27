@@ -26,6 +26,10 @@ pub enum PeerMessage {
         begin: u32,
         length: u32,
     },
+    Extended {
+        id: u8,
+        payload: Vec<u8>,
+    },
 }
 
 impl PeerMessage {
@@ -145,6 +149,20 @@ impl PeerMessage {
                 })
             }
 
+            20 => {
+                if payload_buffer.is_empty() {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Extended message missing extended ID".into(),
+                    ));
+                }
+                let ext_id = payload_buffer[0];
+                let ext_payload = payload_buffer[1..].to_vec();
+                Ok(PeerMessage::Extended {
+                    id: ext_id,
+                    payload: ext_payload,
+                })
+            }
+
             _ => Err(PeerWireProtocolError::InvalidPeerMessage(format!(
                 "Unknown Message ID: {}",
                 id
@@ -196,6 +214,12 @@ impl PeerMessage {
                 p.extend_from_slice(&begin.to_be_bytes());
                 p.extend_from_slice(&length.to_be_bytes());
                 (Some(8), p)
+            }
+            PeerMessage::Extended { id, payload } => {
+                let mut p = Vec::with_capacity(1 + payload.len());
+                p.push(*id);
+                p.extend_from_slice(payload);
+                (Some(20), p)
             }
         };
 

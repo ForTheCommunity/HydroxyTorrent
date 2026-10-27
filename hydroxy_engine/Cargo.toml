@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hydroxy_bencode = { path = "../hydroxy_bencode" }
 hydroxy_config = { path = "../hydroxy_config" }
 hydroxy_peer_wire_proto = { path = "../hydroxy_pwp" }
 hydroxy_state = { path = "../hydroxy_state" }

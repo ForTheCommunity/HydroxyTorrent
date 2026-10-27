@@ -1,9 +1,15 @@
 
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr},
+    sync::Arc,
+    time::Duration,
+};
 
 use hydroxy_peer_wire_proto::{handshake::Handshake, message::PeerMessage};
 use hydroxy_state::TorrentState;
 use hydroxy_storage_io::{file_region::FileRegion, piece_io::PieceIO};
+use hydroxy_tracker::Peer;
 use tokio::{
     net::{tcp::OwnedReadHalf, TcpStream},
     sync::{broadcast, mpsc, Mutex},
@@ -12,6 +18,7 @@ use tracing::{info, warn};
 
 use crate::{
     errors::EngineError,
+    pex,
     piece_allocator::{PieceAllocator, PieceStatus},
     piece_assembler::PieceAssembler,
     stats::stats::PeerConnectionState,
@@ -49,16 +56,22 @@ pub struct PeerWorker {
     pub stats_registry: Arc<StatsRegistry>,
     pub have_tx: broadcast::Sender<u32>,
     pub have_rx: broadcast::Receiver<u32>,
+    pub supports_extensions: bool,
+    pub remote_ut_pex_id: Option<u8>,
+    pub connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+    pub peer_tx: mpsc::Sender<Vec<Peer>>,
+    pub last_sent_pex_peers: HashSet<(Ipv4Addr, u16)>,
 }
 
 impl PeerWorker {
-    pub async fn start(self) -> Result<(), EngineError> {
+    pub async fn start(mut self) -> Result<(), EngineError> {
         let mut tcp_stream = TcpStream::connect(format!("{}:{}", self.ip_addr, self.port)).await?;
 
         let handshake = Handshake::new(self.info_hash, self.peer_id)
             .do_handshake(&mut tcp_stream)
             .await?;
 
+        self.supports_extensions = handshake.supports_extensions();
         self.run_with_stream(tcp_stream, handshake.peer_id).await
     }
 
@@ -76,6 +89,17 @@ impl PeerWorker {
         remote_peer_id: [u8; 20],
     ) -> Result<(), EngineError> {
         let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
+
+        // If remote peer supports BEP 10 Extension Protocol, send Extended Handshake
+        if self.supports_extensions {
+            let ext_handshake_payload = pex::build_extended_handshake();
+            PeerMessage::Extended {
+                id: pex::EXTENSION_HANDSHAKE_ID,
+                payload: ext_handshake_payload,
+            }
+            .write(&mut tcp_stream)
+            .await?;
+        }
 
         // Send local bitfield immediately after handshake per BEP 0003
         let our_bitfield = self
@@ -176,6 +200,9 @@ impl PeerWorker {
         read_half: &mut OwnedReadHalf,
         out_tx: &mpsc::Sender<PeerMessage>,
     ) -> Result<(), EngineError> {
+        let mut pex_interval = tokio::time::interval(Duration::from_secs(60));
+        pex_interval.tick().await; // skip initial tick
+
         loop {
             let read_timeout = if self.current_piece.is_some() {
                 Duration::from_secs(45)
@@ -183,32 +210,36 @@ impl PeerWorker {
                 Duration::from_secs(120)
             };
 
-            let read_result = tokio::time::timeout(
-                read_timeout,
-                PeerMessage::read(read_half),
-            ).await;
-
-            match read_result {
-                Ok(msg_result) => {
-                    let peer_message = msg_result?;
-                    self.handle_message(peer_message, out_tx).await?;
+            tokio::select! {
+                read_result = tokio::time::timeout(read_timeout, PeerMessage::read(read_half)) => {
+                    match read_result {
+                        Ok(msg_result) => {
+                            let peer_message = msg_result?;
+                            self.handle_message(peer_message, out_tx).await?;
+                        }
+                        Err(_) => {
+                            if let Some(piece_idx) = self.current_piece.take() {
+                                warn!(
+                                    "Worker {}:{} piece {} request stalled (45s no data) — releasing piece back to pool",
+                                    self.ip_addr, self.port, piece_idx
+                                );
+                                self.piece_allocator
+                                    .lock()
+                                    .await
+                                    .release_piece(piece_idx as usize);
+                                self.piece_assembler.clear_piece(piece_idx);
+                                self.pending_requests = 0;
+                                self.requested_offset = 0;
+                                self.try_start_downloading(out_tx).await?;
+                            } else {
+                                let _ = out_tx.send(PeerMessage::KeepAlive).await;
+                            }
+                        }
+                    }
                 }
-                Err(_) => {
-                    if let Some(piece_idx) = self.current_piece.take() {
-                        warn!(
-                            "Worker {}:{} piece {} request stalled (45s no data) — releasing piece back to pool",
-                            self.ip_addr, self.port, piece_idx
-                        );
-                        self.piece_allocator
-                            .lock()
-                            .await
-                            .release_piece(piece_idx as usize);
-                        self.piece_assembler.clear_piece(piece_idx);
-                        self.pending_requests = 0;
-                        self.requested_offset = 0;
-                        self.try_start_downloading(out_tx).await?;
-                    } else {
-                        let _ = out_tx.send(PeerMessage::KeepAlive).await;
+                _ = pex_interval.tick() => {
+                    if let Some(remote_id) = self.remote_ut_pex_id {
+                        self.send_pex_update(remote_id, out_tx).await;
                     }
                 }
             }
@@ -498,9 +529,92 @@ impl PeerWorker {
             } => {
                 let _ = (index, begin, length);
             }
+
+            PeerMessage::Extended { id, payload } => {
+                if id == pex::EXTENSION_HANDSHAKE_ID {
+                    if let Some(remote_id) = pex::parse_remote_ut_pex_id(&payload) {
+                        info!(
+                            "PEX: Negotiated ut_pex with {}:{} (remote extended ID: {})",
+                            self.ip_addr, self.port, remote_id
+                        );
+                        let was_none = self.remote_ut_pex_id.is_none();
+                        self.remote_ut_pex_id = Some(remote_id);
+                        if was_none {
+                            // Send initial PEX message with currently connected peers
+                            self.send_pex_update(remote_id, out_tx).await;
+                        }
+                    }
+                } else if Some(id) == self.remote_ut_pex_id || id == pex::UT_PEX_EXT_ID {
+                    let discovered_peers = pex::parse_pex_added_peers(&payload);
+                    if !discovered_peers.is_empty() {
+                        info!(
+                            "PEX: Discovered {} peer(s) from {}:{}",
+                            discovered_peers.len(),
+                            self.ip_addr,
+                            self.port
+                        );
+                        let _ = self.peer_tx.send(discovered_peers).await;
+                    }
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Send a PEX update message to the remote peer advertising connected peers.
+    async fn send_pex_update(
+        &mut self,
+        remote_pex_id: u8,
+        out_tx: &mpsc::Sender<PeerMessage>,
+    ) {
+        let current_peers: Vec<(Ipv4Addr, u16)> = {
+            let guard = self.connected_peers.lock().await;
+            guard.iter().copied().collect()
+        };
+
+        let my_ipv4 = match self.ip_addr {
+            IpAddr::V4(ipv4) => Some(ipv4),
+            _ => None,
+        };
+
+        let added: Vec<(Ipv4Addr, u16)> = current_peers
+            .iter()
+            .filter(|&&(ip, port)| {
+                if Some(ip) == my_ipv4 && port == self.port {
+                    return false; // Don't advertise peer to itself
+                }
+                !self.last_sent_pex_peers.contains(&(ip, port))
+            })
+            .take(50)
+            .copied()
+            .collect();
+
+        let current_set: HashSet<(Ipv4Addr, u16)> = current_peers.into_iter().collect();
+        let dropped: Vec<(Ipv4Addr, u16)> = self
+            .last_sent_pex_peers
+            .iter()
+            .filter(|&peer| !current_set.contains(peer))
+            .take(50)
+            .copied()
+            .collect();
+
+        if !added.is_empty() || !dropped.is_empty() {
+            for &peer in &added {
+                self.last_sent_pex_peers.insert(peer);
+            }
+            for &peer in &dropped {
+                self.last_sent_pex_peers.remove(&peer);
+            }
+
+            let pex_payload = pex::build_pex_message(&added, &dropped);
+            let _ = out_tx
+                .send(PeerMessage::Extended {
+                    id: remote_pex_id,
+                    payload: pex_payload,
+                })
+                .await;
+        }
     }
 
     /// Attempt to allocate a new piece and begin downloading it.

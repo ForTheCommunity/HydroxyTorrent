@@ -487,6 +487,7 @@ impl TorrentTask {
                                         &torrent_state,
                                         &self.stats_registry,
                                         have_tx.clone(),
+                                        new_peer_tx.clone(),
                                     )
                                     .await
                                     {
@@ -589,6 +590,7 @@ impl TorrentTask {
                                         &torrent_state,
                                         &self.stats_registry,
                                         have_tx.clone(),
+                                        new_peer_tx.clone(),
                                     )
                                     .await
                                     {
@@ -700,6 +702,7 @@ impl TorrentTask {
                             &torrent_state,
                             &self.stats_registry,
                             have_tx.clone(),
+                            new_peer_tx.clone(),
                         )
                         .await
                         {
@@ -750,6 +753,7 @@ impl TorrentTask {
                             &torrent_state,
                             &self.stats_registry,
                             have_tx.clone(),
+                            new_peer_tx.clone(),
                         )
                         .await;
                     }
@@ -781,6 +785,7 @@ impl TorrentTask {
                                 &torrent_state,
                                 &self.stats_registry,
                                 have_tx.clone(),
+                                new_peer_tx.clone(),
                             )
                             .await
                             {
@@ -820,6 +825,7 @@ impl TorrentTask {
                                         &torrent_state,
                                         &self.stats_registry,
                                         have_tx.clone(),
+                                        new_peer_tx.clone(),
                                     )
                                     .await
                                     {
@@ -1041,6 +1047,7 @@ impl TorrentTask {
         torrent_state: &Arc<Mutex<TorrentState>>,
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,
+        peer_tx: mpsc::Sender<Vec<Peer>>,
     ) -> bool {
         let key = (inbound.peer_ip, inbound.peer_port);
         {
@@ -1063,6 +1070,8 @@ impl TorrentTask {
         let have_rx = have_tx.subscribe();
         let stream = inbound.stream;
         let remote_peer_id = inbound.remote_peer_id;
+        let supports_extensions = inbound.supports_extensions;
+        let connected_peers_clone = Arc::clone(connected_peers);
 
         worker_set.spawn(async move {
             let worker = PeerWorker {
@@ -1091,6 +1100,11 @@ impl TorrentTask {
                 stats_registry,
                 have_tx,
                 have_rx,
+                supports_extensions,
+                remote_ut_pex_id: None,
+                connected_peers: connected_peers_clone,
+                peer_tx,
+                last_sent_pex_peers: HashSet::new(),
             };
 
             let result = worker.start_inbound(stream, remote_peer_id).await;
@@ -1126,6 +1140,7 @@ impl TorrentTask {
         torrent_state: &Arc<Mutex<TorrentState>>,
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,
+        peer_tx: mpsc::Sender<Vec<Peer>>,
     ) -> bool {
         let key = (peer.ipv4_addr, peer.port);
         {
@@ -1146,6 +1161,7 @@ impl TorrentTask {
         let peer_ip = peer.ipv4_addr;
         let peer_port = peer.port;
         let have_rx = have_tx.subscribe();
+        let connected_peers_clone = Arc::clone(connected_peers);
 
         worker_set.spawn(async move {
             let worker = PeerWorker {
@@ -1174,6 +1190,11 @@ impl TorrentTask {
                 stats_registry,
                 have_tx,
                 have_rx,
+                supports_extensions: false, // will be discovered in handshake
+                remote_ut_pex_id: None,
+                connected_peers: connected_peers_clone,
+                peer_tx,
+                last_sent_pex_peers: HashSet::new(),
             };
 
             let result = worker.start().await;
