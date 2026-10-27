@@ -13,12 +13,23 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
     let tracker_addr = tracker
         .announce_url
         .trim_start_matches("udp://")
-        .split("/")
+        .split('/')
         .next()
-        .ok_or(TrackerError::InvalidUrl(tracker.announce_url.clone()))?;
+        .ok_or_else(|| TrackerError::InvalidUrl(tracker.announce_url.clone()))?;
+
+    let (host, port) = match tracker_addr.rsplit_once(':') {
+        Some((h, p)) => (
+            h,
+            p.parse::<u16>()
+                .map_err(|_| TrackerError::InvalidUrl(tracker.announce_url.clone()))?,
+        ),
+        None => (tracker_addr, 80),
+    };
+
+    let resolved_addr = crate::resolve_host_port(host, port).await?;
 
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    tokio::time::timeout(Duration::from_secs(5), socket.connect(tracker_addr)).await??;
+    socket.connect(resolved_addr).await?;
 
     // connecting
     let transaction_id: i32 = rand::random();

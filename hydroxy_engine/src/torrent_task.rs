@@ -2,7 +2,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, Ipv4Addr},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use hydroxy_state::TorrentState;
@@ -34,12 +34,7 @@ const MAX_CONNECTED_PEERS_PER_TORRENT: usize = 50;
 const MAX_PEER_POOL_SIZE: usize = 500;
 const MAX_FAILED_PEERS_CACHE: usize = 1000;
 const FAILED_PEER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(180);
-const MAX_CONCURRENT_TRACKER_ANNOUNCES: usize = 16;
-
-fn tracker_announce_semaphore() -> &'static Arc<Semaphore> {
-    static SEM: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    SEM.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_TRACKER_ANNOUNCES)))
-}
+const MAX_CONCURRENT_TRACKER_ANNOUNCES_PER_TORRENT: usize = 8;
 
 #[derive(PartialEq, Eq)]
 enum SpawnPeerOutcome {
@@ -332,20 +327,49 @@ impl TorrentTask {
                     None
                 };
 
-                info!("Re-announcing to trackers (seeding={}) for fresh peers...", is_complete);
-                Self::announce_to_trackers_stream(
-                    &re_announce_trackers,
-                    &re_announce_info_hash,
-                    session_peer_id,
-                    re_announce_port,
-                    downloaded,
-                    uploaded,
-                    remaining,
-                    event,
-                    Some((&re_announce_stats, &re_announce_info_hash_sha1)),
-                    &re_announce_peer_tx,
-                )
-                .await;
+                let due_trackers: Vec<String> = if event.is_some() {
+                    re_announce_trackers.clone()
+                } else {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let tracker_snaps =
+                        re_announce_stats.snapshot_trackers(&re_announce_info_hash_sha1);
+                    re_announce_trackers
+                        .iter()
+                        .filter(|url| {
+                            tracker_snaps
+                                .iter()
+                                .find(|t| &t.url == *url)
+                                .map(|t| t.next_announce <= now)
+                                .unwrap_or(true)
+                        })
+                        .cloned()
+                        .collect()
+                };
+
+                if !due_trackers.is_empty() {
+                    info!(
+                        "Re-announcing to {}/{} due trackers (seeding={}) for fresh peers...",
+                        due_trackers.len(),
+                        re_announce_trackers.len(),
+                        is_complete
+                    );
+                    Self::announce_to_trackers_stream(
+                        &due_trackers,
+                        &re_announce_info_hash,
+                        session_peer_id,
+                        re_announce_port,
+                        downloaded,
+                        uploaded,
+                        remaining,
+                        event,
+                        Some((&re_announce_stats, &re_announce_info_hash_sha1)),
+                        &re_announce_peer_tx,
+                    )
+                    .await;
+                }
             }
         });
 
@@ -1021,10 +1045,10 @@ impl TorrentTask {
             }
         }
 
-        // 2. Launch concurrent announce tasks for all trackers with bounded concurrency
-        // so large tracker lists do not flood Tokio's blocking DNS threadpool.
+        // 2. Launch concurrent announce tasks for all trackers with per-torrent bounded concurrency
+        // so one torrent's long tracker list never blocks other torrents from announcing immediately.
         let mut join_set = JoinSet::new();
-        let sem = Arc::clone(tracker_announce_semaphore());
+        let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_TRACKER_ANNOUNCES_PER_TORRENT));
 
         for announce_url in trackers {
             let announce_url = announce_url.clone();
@@ -1091,7 +1115,7 @@ impl TorrentTask {
                                 &err_msg,
                                 Some(0),
                                 None,
-                                Some(now + 60),
+                                Some(now + 300),
                             );
                         }
                         warn!("ERROR -> {} on tracker: {}", e, announce_url);

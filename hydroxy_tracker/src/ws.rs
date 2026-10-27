@@ -107,11 +107,12 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
     let default_port = if is_secure { 443 } else { 80 };
     let port = parsed_url.port().unwrap_or(default_port);
 
-    // Establish TCP connection
+    // Resolve host via bounded DNS cache and establish TCP connection using SocketAddr
     let addr_str = format!("{}:{}", host, port);
+    let resolved_addr = crate::resolve_host_port(host, port).await?;
     let tcp_stream = tokio::time::timeout(
         Duration::from_secs(8),
-        TcpStream::connect(&addr_str),
+        TcpStream::connect(resolved_addr),
     )
     .await
     .map_err(|_| TrackerError::NetworkError(format!("Connection timeout to {}", addr_str)))?

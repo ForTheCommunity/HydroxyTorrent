@@ -232,47 +232,48 @@ impl PeerWorker {
         out_tx: &mpsc::Sender<PeerMessage>,
         info_hash_sha1: &str,
     ) -> Result<(), EngineError> {
-        let mut pex_interval = tokio::time::interval(Duration::from_secs(60));
-        pex_interval.tick().await; // skip initial tick
+        let mut last_pex_sent = std::time::Instant::now();
+        let pex_period = Duration::from_secs(60);
 
         loop {
+            // IMPORTANT: Do NOT wrap PeerMessage::read inside a tokio::select! with a timer.
+            // PeerMessage::read performs multiple sequential read_exact calls; cancelling it
+            // mid-message when a timer ticks desynchronizes the TCP stream and drops the peer.
             let read_timeout = if self.current_piece.is_some() {
                 Duration::from_secs(45)
             } else {
-                Duration::from_secs(120)
+                Duration::from_secs(60)
             };
 
-            tokio::select! {
-                read_result = tokio::time::timeout(read_timeout, PeerMessage::read(read_half)) => {
-                    match read_result {
-                        Ok(msg_result) => {
-                            let peer_message = msg_result?;
-                            self.handle_message(peer_message, out_tx, info_hash_sha1).await?;
-                        }
-                        Err(_) => {
-                            if let Some(piece_idx) = self.current_piece.take() {
-                                warn!(
-                                    "Worker {}:{} piece {} request stalled (45s no data) — releasing piece back to pool",
-                                    self.ip_addr, self.port, piece_idx
-                                );
-                                self.piece_allocator
-                                    .lock()
-                                    .await
-                                    .release_piece(piece_idx as usize);
-                                self.piece_assembler.clear_piece(piece_idx);
-                                self.pending_requests = 0;
-                                self.requested_offset = 0;
-                                self.try_start_downloading(out_tx).await?;
-                            } else {
-                                let _ = out_tx.send(PeerMessage::KeepAlive).await;
-                            }
-                        }
+            match tokio::time::timeout(read_timeout, PeerMessage::read(read_half)).await {
+                Ok(msg_result) => {
+                    let peer_message = msg_result?;
+                    self.handle_message(peer_message, out_tx, info_hash_sha1).await?;
+                }
+                Err(_) => {
+                    if let Some(piece_idx) = self.current_piece.take() {
+                        warn!(
+                            "Worker {}:{} piece {} request stalled (45s no data) — releasing piece back to pool",
+                            self.ip_addr, self.port, piece_idx
+                        );
+                        self.piece_allocator
+                            .lock()
+                            .await
+                            .release_piece(piece_idx as usize);
+                        self.piece_assembler.clear_piece(piece_idx);
+                        self.pending_requests = 0;
+                        self.requested_offset = 0;
+                        self.try_start_downloading(out_tx).await?;
+                    } else {
+                        let _ = out_tx.send(PeerMessage::KeepAlive).await;
                     }
                 }
-                _ = pex_interval.tick() => {
-                    if let Some(remote_id) = self.remote_ut_pex_id {
-                        self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
-                    }
+            }
+
+            if last_pex_sent.elapsed() >= pex_period {
+                last_pex_sent = std::time::Instant::now();
+                if let Some(remote_id) = self.remote_ut_pex_id {
+                    self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
                 }
             }
         }

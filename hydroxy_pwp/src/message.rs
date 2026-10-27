@@ -217,10 +217,18 @@ impl PeerMessage {
                 })
             }
 
-            _ => Err(PeerWireProtocolError::InvalidPeerMessage(format!(
-                "Unknown Message ID: {}",
-                id
-            ))),
+            _ => {
+                // Unknown or unhandled extension/DHT message (e.g., id=9 Port, BEP 6 Fast Extension).
+                // Consume and discard exact payload bytes so the TCP stream stays synchronized
+                // without disconnecting the peer.
+                if payload_length > 0 {
+                    let mut limited = tcp_stream.take(payload_length as u64);
+                    tokio::io::copy(&mut limited, &mut tokio::io::sink())
+                        .await
+                        .map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
+                }
+                Ok(PeerMessage::KeepAlive)
+            }
         }
     }
 

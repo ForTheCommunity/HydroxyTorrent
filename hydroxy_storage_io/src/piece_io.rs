@@ -6,14 +6,7 @@ fn run_disk_io<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    if tokio::runtime::Handle::try_current()
-        .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-        .unwrap_or(false)
-    {
-        tokio::task::block_in_place(f)
-    } else {
-        f()
-    }
+    f()
 }
 
 pub struct PieceIO {

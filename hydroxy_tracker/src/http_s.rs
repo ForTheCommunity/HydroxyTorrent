@@ -1,13 +1,33 @@
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use hydroxy_bencode::decode::{BencodedValue, decode};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use crate::{Peer, Tracker, TrackerEvents, TrackerResponse, errors::TrackerError};
+
+struct HydroxyDnsResolver;
+
+impl Resolve for HydroxyDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addr = crate::resolve_host_port(&host, 0)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            let addrs: Addrs = Box::new(std::iter::once(addr));
+            Ok(addrs)
+        })
+    }
+}
 
 fn shared_http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            .dns_resolver(Arc::new(HydroxyDnsResolver))
             .timeout(Duration::from_secs(15))
             .connect_timeout(Duration::from_secs(8))
             .pool_max_idle_per_host(4)
@@ -17,6 +37,7 @@ fn shared_http_client() -> &'static reqwest::Client {
 }
 
 pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError> {
+
     let mut url = format!(
         "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
         tracker.announce_url,

@@ -6,13 +6,8 @@ use hydroxy_bencode::{
     encode::encode,
 };
 use hydroxy_config::HydroxyConfig;
-use hydroxy_storage_io::read_file_to_bytes;
 use hydroxy_utils::torrent_info::{OtherInfos, TorrentInfo};
-use tokio::{
-    fs::{File, create_dir_all},
-    io::AsyncWriteExt,
-};
-use tracing::{info};
+use tracing::info;
 
 use crate::errors::StateError;
 pub mod errors;
@@ -88,7 +83,7 @@ impl TorrentState {
             .await?;
         }
 
-        let file = read_file_to_bytes(file_path).await?;
+        let file = std::fs::read(file_path).map_err(hydroxy_storage_io::errors::StorageIOError::from)?;
 
         Ok(Self::decode_state(file)?)
     }
@@ -100,12 +95,11 @@ impl TorrentState {
 
         let state_dir = HydroxyConfig::state_dir()?;
         if !state_dir.exists() {
-            create_dir_all(&state_dir).await?;
+            std::fs::create_dir_all(&state_dir)?;
         }
         let file_path = state_dir.join(file_name);
 
-        let mut file = File::create(file_path).await?;
-        let _a = file.write_all(&encoded_data).await?;
+        std::fs::write(file_path, &encoded_data)?;
         Ok(())
     }
 
