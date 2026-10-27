@@ -16,7 +16,14 @@ extension TorrentStructureX on TorrentStructure {
   int get sizeBytes => (double.tryParse(size.trim()) ?? 0.0).round();
 
   /// Downloaded amount in integer bytes
-  int get downloadedBytes => (double.tryParse(downloaded.trim()) ?? 0.0).round();
+  int get downloadedBytes {
+    final d = (double.tryParse(downloaded.trim()) ?? 0.0).round();
+    final s = sizeBytes;
+    if (s > 0 && (d > s || progressValue >= 1.0)) {
+      return s;
+    }
+    return d;
+  }
 
   /// Uploaded amount in integer bytes
   int get uploadedBytes => (double.tryParse(uploaded.trim()) ?? 0.0).round();

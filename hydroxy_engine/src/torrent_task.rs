@@ -145,27 +145,26 @@ impl TorrentTask {
             self.stats_registry.set_status(&info_hash_sha1, None);
         }
 
-        let mut completed_pieces = 0;
-        for (i, byte) in hot_state.pieces.iter().enumerate() {
-            for bit in 0..8 {
-                let piece_idx = i * 8 + (7 - bit);
-                if piece_idx < total_pieces && (byte & (1 << bit)) != 0 {
-                    completed_pieces += 1;
-                }
-            }
-        }
-        self.stats_registry.set_initial_bitfield(
-            &info_hash_sha1,
-            &hot_state.pieces,
-            completed_pieces,
-            completed_pieces as u64 * piece_length as u64,
-        );
-
         // Piece Allocator
         let piece_allocator = Arc::new(Mutex::new(PieceAllocator::from_hotstate_bitfield(
             &hot_state.pieces,
             total_pieces,
         )));
+
+        let (completed_pieces, completed_bytes) = {
+            let alloc = piece_allocator.lock().await;
+            (
+                alloc.completed_pieces_count(),
+                alloc.downloaded_bytes(piece_length, total_torrent_size),
+            )
+        };
+
+        self.stats_registry.set_initial_bitfield(
+            &info_hash_sha1,
+            &hot_state.pieces,
+            completed_pieces,
+            completed_bytes,
+        );
 
         let mut is_paused = hot_state.paused == 1;
         let is_sequential = hot_state.sequential == 1;
@@ -847,6 +846,7 @@ impl TorrentTask {
                             zero_speed_since = None;
                             self.queue_manager.release_download_slot(&info_hash).await;
                         }
+                        self.stats_registry.set_initial_progress(&info_hash_sha1, total_pieces, total_torrent_size);
                         let current_status = self.stats_registry.snapshot_torrent(&info_hash_sha1).and_then(|s| s.custom_status);
                         if current_status.as_deref() != Some("seeding") {
                             info!("All pieces complete — torrent is seeding");

@@ -65,7 +65,7 @@ impl StatsRegistry {
     // called by PeerWorker on every received block.
     pub fn record_download(&self, info_hash: &str, ip_addr: IpAddr, port: u16, bytes: u64) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
-            torrent.downloaded_bytes += bytes;
+            torrent.downloaded_bytes = (torrent.downloaded_bytes + bytes).min(torrent.total_bytes);
             torrent.download_speed.record(bytes);
 
             if let Some(peer) = torrent.peers_stats.get_mut(&(ip_addr, port)) {
@@ -106,6 +106,9 @@ impl StatsRegistry {
 
             if is_new_piece {
                 torrent.completed_pieces += 1;
+                if torrent.total_pieces > 0 && torrent.completed_pieces >= torrent.total_pieces {
+                    torrent.downloaded_bytes = torrent.total_bytes;
+                }
             }
 
             if let Some(peer) = torrent.peers_stats.get_mut(&(ip, port)) {
@@ -191,7 +194,11 @@ impl StatsRegistry {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
             torrent.bitfield = bitfield.to_vec();
             torrent.completed_pieces = completed_pieces;
-            torrent.downloaded_bytes = downloaded_bytes;
+            torrent.downloaded_bytes = if torrent.total_pieces > 0 && completed_pieces >= torrent.total_pieces {
+                torrent.total_bytes
+            } else {
+                downloaded_bytes.min(torrent.total_bytes)
+            };
         }
     }
 
@@ -199,7 +206,11 @@ impl StatsRegistry {
     pub fn set_initial_progress(&self, info_hash: &str, completed_pieces: usize, downloaded_bytes: u64) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
             torrent.completed_pieces = completed_pieces;
-            torrent.downloaded_bytes = downloaded_bytes;
+            torrent.downloaded_bytes = if torrent.total_pieces > 0 && completed_pieces >= torrent.total_pieces {
+                torrent.total_bytes
+            } else {
+                downloaded_bytes.min(torrent.total_bytes)
+            };
         }
     }
 

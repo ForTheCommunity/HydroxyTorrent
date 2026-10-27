@@ -225,7 +225,7 @@ class MobileTorrentCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '${torrent.progressPercentage}  •  ${formatBytesDynamic(torrent.downloaded)} / ${formatBytesDynamic(torrent.size)}',
+                    '${torrent.progressPercentage}  •  ${formatBytesDynamic(torrent.downloadedBytes.toString())} / ${formatBytesDynamic(torrent.size)}',
                     style: TextStyle(
                       color: colors.tablePrimaryTextColor,
                       fontSize: 12,

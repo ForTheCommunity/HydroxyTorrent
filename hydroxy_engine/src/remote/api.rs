@@ -213,17 +213,23 @@ pub async fn get_torrent_detail(
         let bitfield = state.stats.snapshot_bitfield(&info_hash);
         use base64::Engine;
         let pieces = base64::engine::general_purpose::STANDARD.encode(&bitfield);
+        let is_complete = snap.total_pieces > 0 && snap.completed_pieces >= snap.total_pieces;
         let progress = if snap.total_pieces > 0 {
-            snap.completed_pieces as f64 / snap.total_pieces as f64
+            (snap.completed_pieces as f64 / snap.total_pieces as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
         let status = if let Some(ref s) = snap.custom_status {
             s.clone()
-        } else if snap.total_pieces > 0 && snap.completed_pieces == snap.total_pieces {
+        } else if is_complete {
             "seeding".to_string()
         } else {
             "downloading".to_string()
+        };
+        let downloaded = if is_complete {
+            snap.total_bytes
+        } else {
+            snap.downloaded_bytes.min(snap.total_bytes)
         };
 
         Ok(Json(TorrentDetailApiItem {
@@ -231,7 +237,7 @@ pub async fn get_torrent_detail(
             name: snap.name,
             category: snap.category,
             size: snap.total_bytes,
-            downloaded: snap.downloaded_bytes,
+            downloaded,
             uploaded: snap.uploaded_bytes,
             progress,
             status,
@@ -538,17 +544,23 @@ pub async fn remove_torrent(
 }
 
 fn snapshot_to_api_item(snap: TorrentStatsSnapshot) -> TorrentApiItem {
+    let is_complete = snap.total_pieces > 0 && snap.completed_pieces >= snap.total_pieces;
     let progress = if snap.total_pieces > 0 {
-        snap.completed_pieces as f64 / snap.total_pieces as f64
+        (snap.completed_pieces as f64 / snap.total_pieces as f64).clamp(0.0, 1.0)
     } else {
         0.0
     };
     let status = if let Some(ref s) = snap.custom_status {
         s.clone()
-    } else if snap.total_pieces > 0 && snap.completed_pieces == snap.total_pieces {
+    } else if is_complete {
         "seeding".to_string()
     } else {
         "downloading".to_string()
+    };
+    let downloaded = if is_complete {
+        snap.total_bytes
+    } else {
+        snap.downloaded_bytes.min(snap.total_bytes)
     };
 
     TorrentApiItem {
@@ -556,7 +568,7 @@ fn snapshot_to_api_item(snap: TorrentStatsSnapshot) -> TorrentApiItem {
         name: snap.name,
         category: snap.category,
         size: snap.total_bytes,
-        downloaded: snap.downloaded_bytes,
+        downloaded,
         uploaded: snap.uploaded_bytes,
         progress,
         status,

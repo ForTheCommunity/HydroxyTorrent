@@ -145,6 +145,13 @@ impl TorrentStats {
     }
 
     pub fn to_snapshot(&self) -> TorrentStatsSnapshot {
+        let is_complete = self.total_pieces > 0 && self.completed_pieces >= self.total_pieces;
+        let downloaded_bytes = if is_complete {
+            self.total_bytes
+        } else {
+            self.downloaded_bytes.min(self.total_bytes)
+        };
+
         TorrentStatsSnapshot {
             info_hash: self.info_hash.clone(),
             name: self.name.clone(),
@@ -152,7 +159,7 @@ impl TorrentStats {
             total_pieces: self.total_pieces,
             completed_pieces: self.completed_pieces,
             total_bytes: self.total_bytes,
-            downloaded_bytes: self.downloaded_bytes,
+            downloaded_bytes,
             uploaded_bytes: self.uploaded_bytes,
             download_speed: self.download_speed.speed_bps(),
             upload_speed: self.upload_speed.speed_bps(),

@@ -625,7 +625,7 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                   _buildStatRow(
                     colors,
                     label1: 'Downloaded:',
-                    value1: formatBytesDynamic(_torrent.downloaded),
+                    value1: formatBytesDynamic(_torrent.downloadedBytes.toString()),
                     label2: 'Uploaded:',
                     value2: formatBytesDynamic(_torrent.uploaded),
                   ),

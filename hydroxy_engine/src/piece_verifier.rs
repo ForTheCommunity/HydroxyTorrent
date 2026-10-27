@@ -67,7 +67,19 @@ pub async fn verify_torrent_data_on_disk(
         }
     }
 
-    let completed_bytes = completed_pieces as u64 * piece_length as u64;
+    let mut completed_bytes = 0u64;
+    for piece_idx in 0..total_pieces {
+        let byte_idx = piece_idx / 8;
+        let bit_idx = 7 - (piece_idx % 8);
+        if byte_idx < bitfield.len() && (bitfield[byte_idx] & (1 << bit_idx)) != 0 {
+            completed_bytes += crate::piece_assembler::PieceAssembler::actual_piece_length(
+                piece_idx as u32,
+                total_pieces as u32,
+                piece_length,
+                total_torrent_size,
+            ) as u64;
+        }
+    }
     let progress = if total_pieces > 0 {
         (completed_pieces as f64 / total_pieces as f64) * 100.0
     } else {

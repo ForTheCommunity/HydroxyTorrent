@@ -223,4 +223,30 @@ mod tests {
         let chosen_seq_next = alloc.allocate_piece(&peer_bitfield, &ip, total);
         assert_eq!(chosen_seq_next, Some(1));
     }
+
+    #[test]
+    fn test_downloaded_bytes_with_fractional_last_piece() {
+        // 3 pieces, piece_length = 1MB (1,048,576), total_size = 2.5MB (2,621,440)
+        let total_pieces = 3;
+        let piece_length = 1_048_576u32;
+        let total_size = 2_621_440u64; // Last piece is 524,288 bytes
+
+        let mut alloc = PieceAllocator::new(total_pieces);
+        assert_eq!(alloc.downloaded_bytes(piece_length, total_size), 0);
+        assert_eq!(alloc.remaining_bytes(piece_length, total_size), total_size);
+
+        // Complete piece 0
+        alloc.mark_complete(0);
+        assert_eq!(alloc.downloaded_bytes(piece_length, total_size), 1_048_576);
+
+        // Complete piece 1
+        alloc.mark_complete(1);
+        assert_eq!(alloc.downloaded_bytes(piece_length, total_size), 2_097_152);
+
+        // Complete piece 2 (last piece) -> should equal exactly total_size, NOT 3 * piece_length
+        alloc.mark_complete(2);
+        assert!(alloc.all_complete());
+        assert_eq!(alloc.downloaded_bytes(piece_length, total_size), total_size);
+        assert_eq!(alloc.remaining_bytes(piece_length, total_size), 0);
+    }
 }
