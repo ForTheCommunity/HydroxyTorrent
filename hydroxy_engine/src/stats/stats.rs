@@ -189,9 +189,22 @@ impl SpeedTracker {
 
     pub fn record(&mut self, bytes: u64) {
         let now = Instant::now();
-        self.total_bytes += bytes;
-        self.samples.push_back((now, self.total_bytes));
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
         self.cleanup(now);
+
+        // Coalesce high-frequency block samples within a 50ms bucket to bound VecDeque size
+        // (max ~100 entries per 5s window regardless of transfer speed) while keeping baseline sample intact.
+        if self.samples.len() >= 2 {
+            if let Some(back) = self.samples.back_mut() {
+                if now.saturating_duration_since(back.0) < Duration::from_millis(50) {
+                    back.0 = now;
+                    back.1 = self.total_bytes;
+                    return;
+                }
+            }
+        }
+
+        self.samples.push_back((now, self.total_bytes));
     }
 
     // calculates bytes per second.
@@ -235,6 +248,9 @@ impl SpeedTracker {
                 break;
             }
         }
+        if self.samples.capacity() > 128 && self.samples.len() < 32 {
+            self.samples.shrink_to(64);
+        }
     }
 }
 
@@ -271,4 +287,20 @@ pub struct PeerStatsSnapshot {
     pub progress: f64,
     pub pieces_received: u32,
     pub connected_duration_secs: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_speed_tracker_coalesces_samples() {
+        let mut tracker = SpeedTracker::new(Duration::from_secs(5));
+        // Simulate 5,000 rapid 16 KB blocks arriving within the same millisecond burst
+        for i in 1..=5000u64 {
+            tracker.record(i * 16384);
+        }
+        // Coalescing within 50ms buckets keeps sample count tiny instead of 5,000 entries
+        assert!(tracker.samples.len() <= 4);
+    }
 }

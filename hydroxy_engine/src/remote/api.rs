@@ -67,7 +67,13 @@ pub async fn login_handler(
 
     let token = hydroxy_config::auth::generate_session_token();
     {
+        const MAX_ACTIVE_SESSIONS: usize = 256;
         let mut sessions = state.active_sessions.write().unwrap();
+        if sessions.len() >= MAX_ACTIVE_SESSIONS {
+            if let Some(oldest) = sessions.iter().next().cloned() {
+                sessions.remove(&oldest);
+            }
+        }
         sessions.insert(token.clone());
     }
 
@@ -593,19 +599,42 @@ pub async fn get_logs() -> Result<Json<serde_json::Value>, StatusCode> {
         })));
     }
 
-    match tokio::fs::read_to_string(&log_path).await {
-        Ok(content) => {
-            let lines: Vec<&str> = content.lines().collect();
-            let start = if lines.len() > 500 { lines.len() - 500 } else { 0 };
-            let trimmed = lines[start..].join("\n");
-            Ok(Json(serde_json::json!({
-                "logs": trimmed
-            })))
-        }
+    match read_log_tail(&log_path, 128 * 1024, 500).await {
+        Ok(trimmed) => Ok(Json(serde_json::json!({
+            "logs": trimmed
+        }))),
         Err(e) => Ok(Json(serde_json::json!({
             "logs": format!("Error reading log file: {}", e)
         }))),
     }
+}
+
+pub async fn read_log_tail(
+    log_path: &std::path::Path,
+    max_bytes: u64,
+    max_lines: usize,
+) -> std::io::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let mut file = tokio::fs::File::open(log_path).await?;
+    let file_len = file.metadata().await?.len();
+    let seek_offset = file_len.saturating_sub(max_bytes);
+    if seek_offset > 0 {
+        file.seek(std::io::SeekFrom::Start(seek_offset)).await?;
+    }
+
+    let to_read = (file_len - seek_offset) as usize;
+    let mut buf = Vec::with_capacity(to_read);
+    file.take(max_bytes).read_to_end(&mut buf).await?;
+
+    let content = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = content.lines().collect();
+    // If we seeked into the middle of the file, drop the first potentially partial line
+    if seek_offset > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let start = lines.len().saturating_sub(max_lines);
+    Ok(lines[start..].join("\n"))
 }
 
 pub async fn shutdown_daemon() -> impl IntoResponse {
@@ -870,5 +899,30 @@ mod tests {
 
         // Stats unregistered
         assert!(state.stats.snapshot_torrent(&info_hash).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_log_tail_bounded() {
+        let temp_file = std::env::temp_dir().join(format!(
+            "hydroxy_test_log_{}.log",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut content = String::new();
+        for i in 1..=1000 {
+            content.push_str(&format!("2026-10-27 INFO line number {}\n", i));
+        }
+        tokio::fs::write(&temp_file, content.as_bytes()).await.unwrap();
+
+        // Read only last 4 KB and at most 50 lines
+        let tail = read_log_tail(&temp_file, 4096, 50).await.unwrap();
+        let lines: Vec<&str> = tail.lines().collect();
+        assert_eq!(lines.len(), 50);
+        assert!(lines.last().unwrap().ends_with("line number 1000"));
+        assert!(lines.first().unwrap().ends_with("line number 951"));
+
+        let _ = tokio::fs::remove_file(&temp_file).await;
     }
 }

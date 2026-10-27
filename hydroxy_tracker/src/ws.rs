@@ -71,6 +71,20 @@ impl AsyncWrite for WsStream {
     }
 }
 
+fn shared_tls_connector() -> &'static TlsConnector {
+    static CONNECTOR: std::sync::OnceLock<TlsConnector> = std::sync::OnceLock::new();
+    CONNECTOR.get_or_init(|| {
+        let mut root_store = RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        TlsConnector::from(Arc::new(client_config))
+    })
+}
+
 pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError> {
     let parsed_url = Url::parse(&tracker.announce_url)
         .map_err(|e| TrackerError::InvalidUrl(format!("Failed to parse URL: {}", e)))?;
@@ -105,14 +119,7 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
 
     // Establish TLS if wss://
     let mut stream = if is_secure {
-        let mut root_store = RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        let client_config = ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-
-        let connector = TlsConnector::from(Arc::new(client_config));
+        let connector = shared_tls_connector();
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|e| TrackerError::InvalidUrl(format!("Invalid DNS name {}: {}", host, e)))?;
 

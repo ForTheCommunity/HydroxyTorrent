@@ -31,6 +31,7 @@ use crate::{
 };
 
 const MAX_CONNECTED_PEERS_PER_TORRENT: usize = 30;
+const MAX_PEER_POOL_SIZE: usize = 500;
 
 pub struct TorrentTask {
     pub root_dir: String,
@@ -60,11 +61,13 @@ impl TorrentTask {
         let total_torrent_size: u64 = file_map.iter().map(|r| r.length).sum();
         let total_pieces = torrent_info.info.pieces.len() / 20;
         let piece_length = torrent_info.info.piece_length as u32;
-        let piece_hashes = Arc::new(torrent_info.info.pieces.clone());
+        let torrent_name = torrent_info.info.name;
+        let torrent_announce = torrent_info.announce;
+        let piece_hashes = Arc::new(torrent_info.info.pieces);
 
         let mut trackers = hot_state.trackers.clone();
-        if trackers.is_empty() && !torrent_info.announce.is_empty() {
-            trackers.push(torrent_info.announce.clone());
+        if trackers.is_empty() && !torrent_announce.is_empty() {
+            trackers.push(torrent_announce);
         }
 
         let tracker_stats: Vec<TrackerStats> = trackers
@@ -110,7 +113,7 @@ impl TorrentTask {
 
         self.stats_registry.register_torrent(
             &info_hash_sha1,
-            &torrent_info.info.name,
+            &torrent_name,
             &self.category,
             total_pieces,
             piece_length,
@@ -118,6 +121,7 @@ impl TorrentTask {
             tracker_stats,
             file_stats,
         );
+        drop(torrent_name);
 
         let any_file_exists = file_map.iter().any(|r| std::path::Path::new(&r.path).exists());
         let has_saved_pieces = hot_state.pieces.iter().any(|&b| b != 0);
@@ -269,7 +273,7 @@ impl TorrentTask {
         let initially_complete = all_done;
         let re_announce_active = Arc::clone(&is_active_for_announce);
 
-        tokio::spawn(async move {
+        let re_announce_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
             interval.tick().await; // skip the first immediate tick
 
@@ -386,8 +390,12 @@ impl TorrentTask {
                     match cmd {
                         TorrentCommand::Remove => {
                             info!("Removing torrent task: {}", info_hash_sha1);
+                            is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
+                            re_announce_handle.abort();
                             worker_set.shutdown().await;
                             connected_peers.lock().await.clear();
+                            peer_pool.clear();
+                            peer_pool.shrink_to_fit();
                             self.inbound_registry.unregister(&info_hash).await;
                             self.queue_manager.release_download_slot(&info_hash).await;
                             break;
@@ -759,10 +767,18 @@ impl TorrentTask {
                 }
                 // Handle newly discovered peers from re-announce
                 Some(new_peers) = new_peer_rx.recv() => {
-                    for peer in new_peers {
-                        let is_connected = connected_peers.lock().await.contains(&(peer.ipv4_addr, peer.port));
-                        if !is_connected {
-                            peer_pool.push_back(peer);
+                    {
+                        let connected = connected_peers.lock().await;
+                        for peer in new_peers {
+                            if peer_pool.len() >= MAX_PEER_POOL_SIZE {
+                                break;
+                            }
+                            let key = (peer.ipv4_addr, peer.port);
+                            if !connected.contains(&key)
+                                && !peer_pool.iter().any(|p| p.ipv4_addr == peer.ipv4_addr && p.port == peer.port)
+                            {
+                                peer_pool.push_back(peer);
+                            }
                         }
                     }
 
@@ -857,6 +873,8 @@ impl TorrentTask {
             }
         }
 
+        is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
+        re_announce_handle.abort();
         self.inbound_registry.unregister(&info_hash).await;
         self.control_registry.unregister(&info_hash_sha1);
         self.queue_manager.release_download_slot(&info_hash).await;

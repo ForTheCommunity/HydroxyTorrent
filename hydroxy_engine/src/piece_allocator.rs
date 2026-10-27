@@ -8,14 +8,15 @@ pub struct PieceAllocator {
     pub sequential: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieceStatus {
     Missing,
     Complete,
-    Downloading { peer_ip: String },
+    Downloading { peer_ip: IpAddr },
 }
 
 impl PieceAllocator {
+    #[allow(dead_code)]
     pub fn new(total_pieces: usize) -> Self {
         Self {
             pieces: vec![PieceStatus::Missing; total_pieces],
@@ -25,9 +26,10 @@ impl PieceAllocator {
     }
 
     pub fn register_bitfield(&mut self, bitfield: &[u8], total_pieces: usize) {
-        for piece_index in 0..total_pieces {
+        for piece_index in 0..total_pieces.min(self.piece_availability.len()) {
             if Self::check_piece(bitfield, piece_index) {
-                self.piece_availability[piece_index] += 1;
+                self.piece_availability[piece_index] =
+                    self.piece_availability[piece_index].saturating_add(1);
             }
         }
     }
@@ -40,12 +42,13 @@ impl PieceAllocator {
         peer_ip: &IpAddr,
         total_pieces: usize,
     ) -> Option<usize> {
+        let limit = total_pieces.min(self.pieces.len());
         if self.sequential {
-            for i in 0..total_pieces {
+            for i in 0..limit {
                 if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
                 {
                     self.pieces[i] = PieceStatus::Downloading {
-                        peer_ip: peer_ip.to_string(),
+                        peer_ip: *peer_ip,
                     };
                     return Some(i);
                 }
@@ -55,7 +58,7 @@ impl PieceAllocator {
 
         let mut best: Option<(usize, u32)> = None;
 
-        for i in 0..total_pieces {
+        for i in 0..limit {
             if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
             {
                 let availability = self.piece_availability[i];
@@ -67,7 +70,7 @@ impl PieceAllocator {
 
         if let Some((idx, _)) = best {
             self.pieces[idx] = PieceStatus::Downloading {
-                peer_ip: peer_ip.to_string(),
+                peer_ip: *peer_ip,
             };
             Some(idx)
         } else {
@@ -78,7 +81,9 @@ impl PieceAllocator {
     // release piece when downloading is interrupted.
     // marking piece to Missing...
     pub fn release_piece(&mut self, piece_index: usize) {
-        if matches!(self.pieces[piece_index], PieceStatus::Downloading { .. }) {
+        if piece_index < self.pieces.len()
+            && matches!(self.pieces[piece_index], PieceStatus::Downloading { .. })
+        {
             self.pieces[piece_index] = PieceStatus::Missing;
         }
     }
@@ -94,7 +99,8 @@ impl PieceAllocator {
     // Called when a peer sends Have(index). Increments availability for that piece.
     pub fn register_have(&mut self, piece_index: usize) {
         if piece_index < self.piece_availability.len() {
-            self.piece_availability[piece_index] += 1;
+            self.piece_availability[piece_index] =
+                self.piece_availability[piece_index].saturating_add(1);
         }
     }
 

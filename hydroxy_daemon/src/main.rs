@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use hydroxy_config::HydroxyConfig;
 use hydroxy_engine::{
@@ -6,6 +11,70 @@ use hydroxy_engine::{
     stats::stats_registry::StatsRegistry,
 };
 use tracing::{error, info, warn};
+
+const MAX_LOG_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
+struct RotatingFileState {
+    path: PathBuf,
+    file: File,
+    bytes_written: u64,
+}
+
+#[derive(Clone)]
+struct RotatingLogWriter {
+    state: Arc<Mutex<RotatingFileState>>,
+}
+
+impl RotatingLogWriter {
+    fn open(path: &Path) -> std::io::Result<Self> {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > 0 {
+                let backup = path.with_extension("log.1");
+                let _ = std::fs::rename(path, backup);
+            }
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(RotatingFileState {
+                path: path.to_path_buf(),
+                file,
+                bytes_written: 0,
+            })),
+        })
+    }
+}
+
+impl Write for RotatingLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut guard = self.state.lock().unwrap();
+        if guard.bytes_written + (buf.len() as u64) > MAX_LOG_FILE_SIZE {
+            let _ = guard.file.flush();
+            let backup = guard.path.with_extension("log.1");
+            let _ = std::fs::rename(&guard.path, backup);
+            if let Ok(new_file) = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&guard.path)
+            {
+                guard.file = new_file;
+                guard.bytes_written = 0;
+            }
+        }
+        let n = guard.file.write(buf)?;
+        guard.bytes_written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut guard = self.state.lock().unwrap();
+        guard.file.flush()
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -114,18 +183,13 @@ fn main() {
         }
     }
 
-    // Initialize tracing: write to log file in daemon mode, stdout + log file in foreground
+    // Initialize tracing: write to size-bounded rotating log file in daemon mode, stdout + rotating log file in foreground
     if is_foreground {
         if let Ok(log_path) = HydroxyConfig::log_file_path() {
-            if let Ok(file) = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&log_path)
-            {
+            if let Ok(writer) = RotatingLogWriter::open(&log_path) {
                 use tracing_subscriber::fmt::writer::MakeWriterExt;
                 tracing_subscriber::fmt()
-                    .with_writer(std::io::stdout.and(file))
+                    .with_writer(std::io::stdout.and(move || writer.clone()))
                     .init();
             } else {
                 tracing_subscriber::fmt::init();
@@ -134,14 +198,9 @@ fn main() {
             tracing_subscriber::fmt::init();
         }
     } else if let Ok(log_path) = HydroxyConfig::log_file_path() {
-        if let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&log_path)
-        {
+        if let Ok(writer) = RotatingLogWriter::open(&log_path) {
             tracing_subscriber::fmt()
-                .with_writer(file)
+                .with_writer(move || writer.clone())
                 .with_ansi(false)
                 .init();
         } else {

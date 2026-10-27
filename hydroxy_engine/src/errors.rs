@@ -5,6 +5,7 @@ use hydroxy_tracker::errors::TrackerError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum EngineError {
     #[error("State Error: {0}")]
     Bencode(#[from] StateError),

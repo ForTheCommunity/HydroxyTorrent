@@ -1,6 +1,20 @@
+use std::{sync::OnceLock, time::Duration};
+
 use hydroxy_bencode::decode::{BencodedValue, decode};
 
 use crate::{Peer, Tracker, TrackerEvents, TrackerResponse, errors::TrackerError};
+
+fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(8))
+            .pool_max_idle_per_host(4)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError> {
     let mut url = format!(
@@ -24,9 +38,9 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         url.push_str(event_str);
     }
 
-    println!("GENERATED TRACKER ANNOUNCE URL -> {}", url);
-
-    let response = reqwest::get(url)
+    let response = shared_http_client()
+        .get(url)
+        .send()
         .await
         .map_err(|e| TrackerError::NetworkError(e.to_string()))?;
 

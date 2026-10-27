@@ -117,10 +117,3 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         min_interval: 0,
     })
 }
-
-enum Events {
-    None = 0,
-    Completed = 1,
-    Started = 2,
-    Stopped = 3,
-}

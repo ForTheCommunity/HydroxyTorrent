@@ -293,6 +293,15 @@ impl PeerWorker {
                 self.peer_state.peer_interested = false;
             }
             PeerMessage::Have(index) => {
+                // Guard against out-of-bounds piece index (prevents memory bomb via bitfield.resize)
+                if (index as usize) >= self.total_pieces {
+                    warn!(
+                        "Peer {}:{} sent out-of-range Have({}) (total_pieces={}) — ignoring",
+                        self.ip_addr, self.port, index, self.total_pieces
+                    );
+                    return Ok(());
+                }
+
                 // Update piece allocator availability
                 {
                     let mut piece_allocator = self.piece_allocator.lock().await;
@@ -302,9 +311,12 @@ impl PeerWorker {
                 let byte = index as usize / 8;
                 let bit = 7 - (index as usize % 8);
                 if byte >= self.peer_state.bitfield.len() {
-                    self.peer_state.bitfield.resize(byte + 1, 0);
+                    let max_bytes = (self.total_pieces + 7) / 8;
+                    self.peer_state.bitfield.resize((byte + 1).min(max_bytes), 0);
                 }
-                self.peer_state.bitfield[byte] |= 1 << bit;
+                if byte < self.peer_state.bitfield.len() {
+                    self.peer_state.bitfield[byte] |= 1 << bit;
+                }
 
                 let progress = self.calculate_peer_progress();
                 self.stats_registry.update_peer_progress(
@@ -343,7 +355,13 @@ impl PeerWorker {
                     self.try_start_downloading(out_tx).await?;
                 }
             }
-            PeerMessage::Bitfield(bitfield) => {
+            PeerMessage::Bitfield(mut bitfield) => {
+                let expected_bytes = (self.total_pieces + 7) / 8;
+                if bitfield.len() > expected_bytes {
+                    bitfield.truncate(expected_bytes);
+                    bitfield.shrink_to_fit();
+                }
+
                 {
                     let mut piece_allocator = self.piece_allocator.lock().await;
                     piece_allocator.register_bitfield(&bitfield, self.total_pieces);
@@ -394,6 +412,11 @@ impl PeerWorker {
                 begin,
                 block,
             } => {
+                // Only accept blocks for the currently assigned piece within valid torrent bounds
+                if self.current_piece != Some(index) || (index as usize) >= self.total_pieces {
+                    return Ok(());
+                }
+
                 self.pending_requests = self.pending_requests.saturating_sub(1);
                 self.stats_registry.record_download(
                     &info_hash_sha1,
@@ -415,6 +438,9 @@ impl PeerWorker {
                 {
                     // SHA1 verify
                     let hash_start = index as usize * 20;
+                    if hash_start + 20 > self.piece_hashes.len() {
+                        return Ok(());
+                    }
                     let expected_hash = &self.piece_hashes[hash_start..hash_start + 20];
 
                     if !PieceAssembler::verify_piece(&assembled, expected_hash) {
@@ -431,30 +457,27 @@ impl PeerWorker {
                         return Ok(());
                     }
 
-                    // write to disk
-                    PieceIO {
-                        data: assembled,
-                        piece_index: index,
-                        piece_length: self.piece_length,
-                        file_map: (*self.file_map).clone(),
-                    }
-                    .write_to_disk()
+                    // write to disk without cloning FileRegion vector
+                    PieceIO::write_piece_to_disk(
+                        &self.file_map,
+                        index,
+                        self.piece_length,
+                        &assembled,
+                    )
                     .await?;
+                    drop(assembled);
 
                     info!("Piece {} written to disk", index);
                     self.stats_registry.piece_completed(&info_hash_sha1, self.ip_addr, self.port, index as usize);
 
-                    // update fast-resume state
+                    // update fast-resume state serialized under lock to prevent concurrent state task pileups
                     {
                         let mut state = self.torrent_state.lock().await;
                         state.mark_completed_piece(index as usize);
                         let snapshot = state.clone();
-                        drop(state);
-                        tokio::spawn(async move {
-                            if let Err(e) = TorrentState::save_state(snapshot).await {
-                                warn!("State save failed after piece {}: {}", index, e);
-                            }
-                        });
+                        if let Err(e) = TorrentState::save_state(snapshot).await {
+                            warn!("State save failed after piece {}: {}", index, e);
+                        }
                     }
 
                     // mark complete in allocator
@@ -486,7 +509,12 @@ impl PeerWorker {
                 begin,
                 length,
             } => {
-                // If we have completed this piece and are not choking the peer, serve the requested block
+                // Reject zero-length or oversized block requests (> 128 KB per BEP 0003)
+                if length == 0 || length > 128 * 1024 {
+                    return Ok(());
+                }
+
+                // If we have completed this piece and are not choking the peer, serve only the requested block
                 let is_complete = {
                     let allocator = self.piece_allocator.lock().await;
                     (index as usize) < allocator.pieces.len()
@@ -494,29 +522,32 @@ impl PeerWorker {
                 };
 
                 if is_complete && !self.peer_state.am_choking {
-                    if let Ok(Some(piece_data)) = PieceIO::read_piece_from_disk(
+                    if let Ok(Some(block)) = PieceIO::read_block_from_disk(
                         &self.file_map,
                         index,
+                        begin,
+                        length,
                         self.piece_length,
                         self.total_torrent_size,
-                    ).await {
-                        let begin_usize = begin as usize;
-                        let end_usize = begin_usize + length as usize;
-                        if end_usize <= piece_data.len() {
-                            let block = piece_data[begin_usize..end_usize].to_vec();
-                            let block_len = block.len() as u64;
-                            if out_tx.send(PeerMessage::Piece {
+                    )
+                    .await
+                    {
+                        let block_len = block.len() as u64;
+                        if out_tx
+                            .send(PeerMessage::Piece {
                                 index,
                                 begin,
                                 block,
-                            }).await.is_ok() {
-                                self.stats_registry.record_upload(
-                                    &info_hash_sha1,
-                                    self.ip_addr,
-                                    self.port,
-                                    block_len,
-                                );
-                            }
+                            })
+                            .await
+                            .is_ok()
+                        {
+                            self.stats_registry.record_upload(
+                                &info_hash_sha1,
+                                self.ip_addr,
+                                self.port,
+                                block_len,
+                            );
                         }
                     }
                 }

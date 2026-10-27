@@ -2,10 +2,12 @@ use std::{collections::HashMap, net::Ipv4Addr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex, Semaphore},
 };
 use tracing::{info, warn};
 use hydroxy_peer_wire_proto::handshake::Handshake;
+
+const MAX_CONCURRENT_INBOUND_HANDSHAKES: usize = 64;
 
 pub struct InboundConnection {
     pub stream: TcpStream,
@@ -73,9 +75,17 @@ impl PeerListener {
         info!("Peer inbound listener active on {}", bind_addr);
 
         tokio::spawn(async move {
+            let handshake_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_INBOUND_HANDSHAKES));
             loop {
                 match listener.accept().await {
                     Ok((mut stream, socket_addr)) => {
+                        let permit = match Arc::clone(&handshake_limiter).try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                // Drop connection immediately if handshake concurrency cap is reached
+                                continue;
+                            }
+                        };
                         let peer_ip = match socket_addr.ip() {
                             std::net::IpAddr::V4(ipv4) => ipv4,
                             std::net::IpAddr::V6(ipv6) => {
@@ -90,6 +100,7 @@ impl PeerListener {
                         let registry = Arc::clone(&registry);
 
                         tokio::spawn(async move {
+                            let _permit = permit;
                             // Read 68-byte handshake with 10s timeout
                             let handshake_res = tokio::time::timeout(
                                 std::time::Duration::from_secs(10),
@@ -115,13 +126,17 @@ impl PeerListener {
                                     return;
                                 }
 
-                                let _ = registration.sender.send(InboundConnection {
-                                    stream,
-                                    peer_ip,
-                                    peer_port,
-                                    remote_peer_id: incoming.peer_id,
-                                    supports_extensions: incoming.supports_extensions(),
-                                }).await;
+                                let _ = tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    registration.sender.send(InboundConnection {
+                                        stream,
+                                        peer_ip,
+                                        peer_port,
+                                        remote_peer_id: incoming.peer_id,
+                                        supports_extensions: incoming.supports_extensions(),
+                                    }),
+                                )
+                                .await;
                             }
                         });
                     }
