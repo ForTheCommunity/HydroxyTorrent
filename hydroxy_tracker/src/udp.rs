@@ -18,7 +18,7 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         .ok_or(TrackerError::InvalidUrl(tracker.announce_url.clone()))?;
 
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    socket.connect(tracker_addr).await?;
+    tokio::time::timeout(Duration::from_secs(5), socket.connect(tracker_addr)).await??;
 
     // connecting
     let transaction_id: i32 = rand::random();
@@ -96,13 +96,13 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
     // each peer is 6 Bytes (4 <IP> + 3 <Port>)
     let mut peers = Vec::new();
     let peer_data = &announce_resp[20..n];
-    for chunk in peer_data.chunks(6) {
-        if chunk.len() == 6 {
-            let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
-            let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+    for chunk in peer_data.chunks_exact(6) {
+        let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+        let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+        if !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_loopback() && port != 0 {
             peers.push(Peer {
                 ipv4_addr: ip,
-                port: port,
+                port,
             });
         }
     }

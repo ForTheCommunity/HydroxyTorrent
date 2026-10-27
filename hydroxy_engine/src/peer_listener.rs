@@ -70,8 +70,8 @@ impl PeerListener {
         listen_port: u16,
         registry: Arc<InboundTorrentRegistry>,
     ) -> Result<(), std::io::Error> {
-        let bind_addr = format!("{}:{}", listen_address, listen_port);
-        let listener = TcpListener::bind(&bind_addr).await?;
+        let bind_addr = std::net::SocketAddr::new(listen_address, listen_port);
+        let listener = TcpListener::bind(bind_addr).await?;
         info!("Peer inbound listener active on {}", bind_addr);
 
         tokio::spawn(async move {

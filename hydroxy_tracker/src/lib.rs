@@ -37,7 +37,7 @@ impl Peer {
             // a peer & it's port consumes 6 bytes.
             // 4 for ipv4 address & 2 for port.
             .chunks_exact(6)
-            .map(|a_6bytes_chunk| {
+            .filter_map(|a_6bytes_chunk| {
                 let ipv4_addr = Ipv4Addr::new(
                     a_6bytes_chunk[0],
                     a_6bytes_chunk[1],
@@ -45,7 +45,15 @@ impl Peer {
                     a_6bytes_chunk[3],
                 );
                 let port = u16::from_be_bytes([a_6bytes_chunk[4], a_6bytes_chunk[5]]);
-                Peer { ipv4_addr, port }
+                if !ipv4_addr.is_unspecified()
+                    && !ipv4_addr.is_broadcast()
+                    && !ipv4_addr.is_loopback()
+                    && port != 0
+                {
+                    Some(Peer { ipv4_addr, port })
+                } else {
+                    None
+                }
             })
             .collect()
     }

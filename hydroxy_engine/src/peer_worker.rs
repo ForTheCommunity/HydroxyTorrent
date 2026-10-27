@@ -65,11 +65,21 @@ pub struct PeerWorker {
 
 impl PeerWorker {
     pub async fn start(mut self) -> Result<(), EngineError> {
-        let mut tcp_stream = TcpStream::connect(format!("{}:{}", self.ip_addr, self.port)).await?;
+        let socket_addr = std::net::SocketAddr::new(self.ip_addr, self.port);
+        let mut tcp_stream = tokio::time::timeout(
+            Duration::from_secs(5),
+            TcpStream::connect(socket_addr),
+        )
+        .await
+        .map_err(|_| EngineError::Timeout)??;
+        let _ = tcp_stream.set_nodelay(true);
 
-        let handshake = Handshake::new(self.info_hash, self.peer_id)
-            .do_handshake(&mut tcp_stream)
-            .await?;
+        let handshake = tokio::time::timeout(
+            Duration::from_secs(5),
+            Handshake::new(self.info_hash, self.peer_id).do_handshake(&mut tcp_stream),
+        )
+        .await
+        .map_err(|_| EngineError::Timeout)??;
 
         self.supports_extensions = handshake.supports_extensions();
         self.run_with_stream(tcp_stream, handshake.peer_id).await
@@ -80,6 +90,7 @@ impl PeerWorker {
         tcp_stream: TcpStream,
         remote_peer_id: [u8; 20],
     ) -> Result<(), EngineError> {
+        let _ = tcp_stream.set_nodelay(true);
         self.run_with_stream(tcp_stream, remote_peer_id).await
     }
 
@@ -90,40 +101,51 @@ impl PeerWorker {
     ) -> Result<(), EngineError> {
         let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
 
-        // If remote peer supports BEP 10 Extension Protocol, send Extended Handshake
-        if self.supports_extensions {
-            let ext_handshake_payload = pex::build_extended_handshake();
-            PeerMessage::Extended {
-                id: pex::EXTENSION_HANDSHAKE_ID,
-                payload: ext_handshake_payload,
-            }
-            .write(&mut tcp_stream)
-            .await?;
-        }
-
-        // Send local bitfield immediately after handshake per BEP 0003
-        let our_bitfield = self
-            .piece_allocator
-            .lock()
-            .await
-            .to_bitfield(self.total_pieces);
-        if !our_bitfield.is_empty() {
-            PeerMessage::Bitfield(our_bitfield).write(&mut tcp_stream).await?;
-        }
-
-        // Unchoke the remote peer immediately per BEP 0003 so they can request data from us
-        self.peer_state.am_choking = false;
-        PeerMessage::Unchoke.write(&mut tcp_stream).await?;
-
-        // Express interest if we have missing pieces
-        let has_missing = {
+        let (our_bitfield, has_missing) = {
             let alloc = self.piece_allocator.lock().await;
-            alloc.pieces.iter().any(|p| matches!(p, PieceStatus::Missing))
+            (
+                alloc.to_bitfield(self.total_pieces),
+                alloc.pieces.iter().any(|p| matches!(p, PieceStatus::Missing)),
+            )
         };
+
+        self.peer_state.am_choking = false;
         if has_missing {
             self.peer_state.am_interested = true;
-            PeerMessage::Interested.write(&mut tcp_stream).await?;
         }
+        let supports_extensions = self.supports_extensions;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            // If remote peer supports BEP 10 Extension Protocol, send Extended Handshake
+            if supports_extensions {
+                let ext_handshake_payload = pex::build_extended_handshake();
+                PeerMessage::Extended {
+                    id: pex::EXTENSION_HANDSHAKE_ID,
+                    payload: ext_handshake_payload,
+                }
+                .write(&mut tcp_stream)
+                .await?;
+            }
+
+            // Send local bitfield immediately after handshake per BEP 0003
+            if !our_bitfield.is_empty() {
+                PeerMessage::Bitfield(our_bitfield)
+                    .write(&mut tcp_stream)
+                    .await?;
+            }
+
+            // Unchoke the remote peer immediately per BEP 0003 so they can request data from us
+            PeerMessage::Unchoke.write(&mut tcp_stream).await?;
+
+            // Express interest if we have missing pieces
+            if has_missing {
+                PeerMessage::Interested.write(&mut tcp_stream).await?;
+            }
+
+            Ok::<(), EngineError>(())
+        })
+        .await
+        .map_err(|_| EngineError::Timeout)??;
 
         let client_name = parse_peer_id(&remote_peer_id);
 
@@ -148,19 +170,28 @@ impl PeerWorker {
             loop {
                 tokio::select! {
                     _ = keepalive_interval.tick() => {
-                        if PeerMessage::KeepAlive.write(&mut write_half).await.is_err() {
+                        if tokio::time::timeout(
+                            Duration::from_secs(15),
+                            PeerMessage::KeepAlive.write(&mut write_half),
+                        ).await.map_or(true, |r| r.is_err()) {
                             break;
                         }
                     }
                     Ok(completed_piece) = have_rx.recv() => {
-                        if PeerMessage::Have(completed_piece).write(&mut write_half).await.is_err() {
+                        if tokio::time::timeout(
+                            Duration::from_secs(15),
+                            PeerMessage::Have(completed_piece).write(&mut write_half),
+                        ).await.map_or(true, |r| r.is_err()) {
                             break;
                         }
                     }
                     msg_opt = out_rx.recv() => {
                         match msg_opt {
                             Some(msg) => {
-                                if msg.write(&mut write_half).await.is_err() {
+                                if tokio::time::timeout(
+                                    Duration::from_secs(15),
+                                    msg.write(&mut write_half),
+                                ).await.map_or(true, |r| r.is_err()) {
                                     break;
                                 }
                             }
@@ -171,7 +202,7 @@ impl PeerWorker {
             }
         });
 
-        let result = self.run_loop(&mut read_half, &out_tx).await;
+        let result = self.run_loop(&mut read_half, &out_tx, &info_hash_sha1).await;
         writer_handle.abort();
 
         self.stats_registry.peer_disconnected(&info_hash_sha1, self.ip_addr, self.port);
@@ -199,6 +230,7 @@ impl PeerWorker {
         &mut self,
         read_half: &mut OwnedReadHalf,
         out_tx: &mpsc::Sender<PeerMessage>,
+        info_hash_sha1: &str,
     ) -> Result<(), EngineError> {
         let mut pex_interval = tokio::time::interval(Duration::from_secs(60));
         pex_interval.tick().await; // skip initial tick
@@ -215,7 +247,7 @@ impl PeerWorker {
                     match read_result {
                         Ok(msg_result) => {
                             let peer_message = msg_result?;
-                            self.handle_message(peer_message, out_tx).await?;
+                            self.handle_message(peer_message, out_tx, info_hash_sha1).await?;
                         }
                         Err(_) => {
                             if let Some(piece_idx) = self.current_piece.take() {
@@ -239,7 +271,7 @@ impl PeerWorker {
                 }
                 _ = pex_interval.tick() => {
                     if let Some(remote_id) = self.remote_ut_pex_id {
-                        self.send_pex_update(remote_id, out_tx).await;
+                        self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
                     }
                 }
             }
@@ -250,8 +282,8 @@ impl PeerWorker {
         &mut self,
         peer_message: PeerMessage,
         out_tx: &mpsc::Sender<PeerMessage>,
+        info_hash_sha1: &str,
     ) -> Result<(), EngineError> {
-        let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
         match peer_message {
             PeerMessage::KeepAlive => {
                 // Per spec, KeepAlive is consumed silently.
@@ -572,7 +604,7 @@ impl PeerWorker {
                         self.remote_ut_pex_id = Some(remote_id);
                         if was_none {
                             // Send initial PEX message with currently connected peers
-                            self.send_pex_update(remote_id, out_tx).await;
+                            self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
                         }
                     }
                 } else if Some(id) == self.remote_ut_pex_id || id == pex::UT_PEX_EXT_ID {
@@ -593,16 +625,15 @@ impl PeerWorker {
         Ok(())
     }
 
-    /// Send a PEX update message to the remote peer advertising connected peers.
+    /// Send a PEX update message to the remote peer advertising handshaked connected peers.
     async fn send_pex_update(
         &mut self,
         remote_pex_id: u8,
         out_tx: &mpsc::Sender<PeerMessage>,
+        info_hash_sha1: &str,
     ) {
-        let current_peers: Vec<(Ipv4Addr, u16)> = {
-            let guard = self.connected_peers.lock().await;
-            guard.iter().copied().collect()
-        };
+        let current_peers: Vec<(Ipv4Addr, u16)> =
+            self.stats_registry.active_peer_endpoints(info_hash_sha1);
 
         let my_ipv4 = match self.ip_addr {
             IpAddr::V4(ipv4) => Some(ipv4),
@@ -686,7 +717,7 @@ impl PeerWorker {
         );
 
         let block_size: u32 = 16_384;
-        let max_pending: u32 = 16; // 16 * 16KB = 256KB in-flight pipeline depth
+        let max_pending: u32 = 32; // 32 * 16KB = 512KB in-flight pipeline depth
 
         while self.pending_requests < max_pending && self.requested_offset < actual_len {
             let this_block_len = block_size.min(actual_len - self.requested_offset);
@@ -710,9 +741,13 @@ impl PeerWorker {
         if self.total_pieces == 0 {
             return 0.0;
         }
-        let count = (0..self.total_pieces)
-            .filter(|&i| PieceAllocator::check_piece(&self.peer_state.bitfield, i))
-            .count();
+        let count: usize = self
+            .peer_state
+            .bitfield
+            .iter()
+            .map(|b| b.count_ones() as usize)
+            .sum::<usize>()
+            .min(self.total_pieces);
         (count as f64 / self.total_pieces as f64) * 100.0
     }
 }

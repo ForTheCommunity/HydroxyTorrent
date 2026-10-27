@@ -211,6 +211,8 @@ fn main() {
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(32)
+        .thread_keep_alive(std::time::Duration::from_secs(10))
         .enable_all()
         .build()
         .expect("Failed to initialize Tokio runtime");

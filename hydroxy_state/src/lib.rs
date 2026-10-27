@@ -103,11 +103,9 @@ impl TorrentState {
             create_dir_all(&state_dir).await?;
         }
         let file_path = state_dir.join(file_name);
-        println!("FILE PATH --->>> {:?}", file_path);
 
         let mut file = File::create(file_path).await?;
         let _a = file.write_all(&encoded_data).await?;
-        info!("SAVED STATE....");
         Ok(())
     }
 

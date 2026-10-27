@@ -1,8 +1,8 @@
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, Ipv4Addr},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use hydroxy_state::TorrentState;
@@ -12,7 +12,7 @@ use hydroxy_utils::{
     get_peer_id,
     torrent_info::{OtherInfos, TorrentInfo},
 };
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
@@ -30,8 +30,23 @@ use crate::{
     },
 };
 
-const MAX_CONNECTED_PEERS_PER_TORRENT: usize = 30;
+const MAX_CONNECTED_PEERS_PER_TORRENT: usize = 50;
 const MAX_PEER_POOL_SIZE: usize = 500;
+const MAX_FAILED_PEERS_CACHE: usize = 1000;
+const FAILED_PEER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(180);
+const MAX_CONCURRENT_TRACKER_ANNOUNCES: usize = 16;
+
+fn tracker_announce_semaphore() -> &'static Arc<Semaphore> {
+    static SEM: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SEM.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_TRACKER_ANNOUNCES)))
+}
+
+#[derive(PartialEq, Eq)]
+enum SpawnPeerOutcome {
+    Spawned,
+    AlreadyConnected,
+    AtCapacity,
+}
 
 pub struct TorrentTask {
     pub root_dir: String,
@@ -65,9 +80,16 @@ impl TorrentTask {
         let torrent_announce = torrent_info.announce;
         let piece_hashes = Arc::new(torrent_info.info.pieces);
 
-        let mut trackers = hot_state.trackers.clone();
-        if trackers.is_empty() && !torrent_announce.is_empty() {
-            trackers.push(torrent_announce);
+        let mut trackers = Vec::new();
+        let mut seen_trackers = HashSet::new();
+        for url in hot_state.trackers.iter() {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() && seen_trackers.insert(trimmed.to_string()) {
+                trackers.push(trimmed.to_string());
+            }
+        }
+        if trackers.is_empty() && !torrent_announce.trim().is_empty() {
+            trackers.push(torrent_announce.trim().to_string());
         }
 
         let tracker_stats: Vec<TrackerStats> = trackers
@@ -226,6 +248,8 @@ impl TorrentTask {
 
         // Queue of discovered peers waiting for an open connection slot
         let mut peer_pool: VecDeque<Peer> = VecDeque::new();
+        // Cooldown map for unreachable/failed peers so PEX does not endlessly re-dial dead IPs
+        let mut failed_peers: HashMap<(Ipv4Addr, u16), std::time::Instant> = HashMap::new();
 
         // Channel for announce tasks to stream newly discovered peers directly to the main loop
         let (new_peer_tx, mut new_peer_rx) = mpsc::channel::<Vec<Peer>>(64);
@@ -479,10 +503,10 @@ impl TorrentTask {
                             let can_run = has_download_slot || all_done;
                             if can_run {
                                 while let Some(peer) = peer_pool.pop_front() {
-                                    if !Self::spawn_worker_if_new(
+                                    match Self::spawn_worker_if_new(
                                         &mut worker_set,
                                         &connected_peers,
-                                        peer,
+                                        peer.clone(),
                                         info_hash,
                                         session_peer_id,
                                         total_pieces,
@@ -498,8 +522,11 @@ impl TorrentTask {
                                     )
                                     .await
                                     {
-                                        peer_pool.push_front(peer);
-                                        break;
+                                        SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                        SpawnPeerOutcome::AtCapacity => {
+                                            peer_pool.push_front(peer);
+                                            break;
+                                        }
                                     }
                                 }
 
@@ -582,10 +609,10 @@ impl TorrentTask {
                             let can_run = has_download_slot || recheck.completed_pieces == total_pieces;
                             if !is_paused && can_run {
                                 while let Some(peer) = peer_pool.pop_front() {
-                                    if !Self::spawn_worker_if_new(
+                                    match Self::spawn_worker_if_new(
                                         &mut worker_set,
                                         &connected_peers,
-                                        peer,
+                                        peer.clone(),
                                         info_hash,
                                         session_peer_id,
                                         total_pieces,
@@ -601,8 +628,11 @@ impl TorrentTask {
                                     )
                                     .await
                                     {
-                                        peer_pool.push_front(peer);
-                                        break;
+                                        SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                        SpawnPeerOutcome::AtCapacity => {
+                                            peer_pool.push_front(peer);
+                                            break;
+                                        }
                                     }
                                 }
 
@@ -694,10 +724,10 @@ impl TorrentTask {
                     };
 
                     while let Some(peer) = peer_pool.pop_front() {
-                        if !Self::spawn_worker_if_new(
+                        match Self::spawn_worker_if_new(
                             &mut worker_set,
                             &connected_peers,
-                            peer,
+                            peer.clone(),
                             info_hash,
                             session_peer_id,
                             total_pieces,
@@ -713,8 +743,11 @@ impl TorrentTask {
                         )
                         .await
                         {
-                            peer_pool.push_front(peer);
-                            break;
+                            SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                            SpawnPeerOutcome::AtCapacity => {
+                                peer_pool.push_front(peer);
+                                break;
+                            }
                         }
                     }
 
@@ -768,6 +801,8 @@ impl TorrentTask {
                 // Handle newly discovered peers from re-announce
                 Some(new_peers) = new_peer_rx.recv() => {
                     {
+                        let now = std::time::Instant::now();
+                        failed_peers.retain(|_, ts| now.duration_since(*ts) < FAILED_PEER_COOLDOWN);
                         let connected = connected_peers.lock().await;
                         for peer in new_peers {
                             if peer_pool.len() >= MAX_PEER_POOL_SIZE {
@@ -775,6 +810,7 @@ impl TorrentTask {
                             }
                             let key = (peer.ipv4_addr, peer.port);
                             if !connected.contains(&key)
+                                && !failed_peers.contains_key(&key)
                                 && !peer_pool.iter().any(|p| p.ipv4_addr == peer.ipv4_addr && p.port == peer.port)
                             {
                                 peer_pool.push_back(peer);
@@ -785,10 +821,10 @@ impl TorrentTask {
                     let can_connect = has_download_slot || piece_allocator.lock().await.all_complete();
                     if !is_paused && can_connect {
                         while let Some(peer) = peer_pool.pop_front() {
-                            if !Self::spawn_worker_if_new(
+                            match Self::spawn_worker_if_new(
                                 &mut worker_set,
                                 &connected_peers,
-                                peer,
+                                peer.clone(),
                                 info_hash,
                                 session_peer_id,
                                 total_pieces,
@@ -804,8 +840,11 @@ impl TorrentTask {
                             )
                             .await
                             {
-                                peer_pool.push_front(peer);
-                                break;
+                                SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                SpawnPeerOutcome::AtCapacity => {
+                                    peer_pool.push_front(peer);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -820,15 +859,22 @@ impl TorrentTask {
 
                             if let Err(e) = worker_result {
                                 warn!("Worker {}:{} finished with error: {}", ip, port, e);
+                                if failed_peers.len() >= MAX_FAILED_PEERS_CACHE {
+                                    let now = std::time::Instant::now();
+                                    failed_peers.retain(|_, ts| now.duration_since(*ts) < FAILED_PEER_COOLDOWN);
+                                }
+                                if failed_peers.len() < MAX_FAILED_PEERS_CACHE {
+                                    failed_peers.insert((ip, port), std::time::Instant::now());
+                                }
                             }
 
                             let can_connect = has_download_slot || piece_allocator.lock().await.all_complete();
                             if !is_paused && can_connect {
                                 while let Some(next_peer) = peer_pool.pop_front() {
-                                    if Self::spawn_worker_if_new(
+                                    match Self::spawn_worker_if_new(
                                         &mut worker_set,
                                         &connected_peers,
-                                        next_peer,
+                                        next_peer.clone(),
                                         info_hash,
                                         session_peer_id,
                                         total_pieces,
@@ -844,7 +890,11 @@ impl TorrentTask {
                                     )
                                     .await
                                     {
-                                        break;
+                                        SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                        SpawnPeerOutcome::AtCapacity => {
+                                            peer_pool.push_front(next_peer);
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -971,16 +1021,20 @@ impl TorrentTask {
             }
         }
 
-        // 2. Launch concurrent announce tasks for all trackers in parallel
+        // 2. Launch concurrent announce tasks for all trackers with bounded concurrency
+        // so large tracker lists do not flood Tokio's blocking DNS threadpool.
         let mut join_set = JoinSet::new();
+        let sem = Arc::clone(tracker_announce_semaphore());
 
         for announce_url in trackers {
             let announce_url = announce_url.clone();
             let info_hash = *info_hash;
             let stats_opt = stats.map(|(reg, hash)| (Arc::clone(reg), hash.to_string()));
             let peer_tx = peer_tx.clone();
+            let sem = Arc::clone(&sem);
 
             join_set.spawn(async move {
+                let _permit = sem.acquire_owned().await.ok();
                 let tracker = Tracker {
                     announce_url: announce_url.clone(),
                     downloaded: downloaded as i64,
@@ -1159,16 +1213,17 @@ impl TorrentTask {
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,
         peer_tx: mpsc::Sender<Vec<Peer>>,
-    ) -> bool {
+    ) -> SpawnPeerOutcome {
         let key = (peer.ipv4_addr, peer.port);
         {
             let mut connected = connected_peers.lock().await;
+            if connected.contains(&key) {
+                return SpawnPeerOutcome::AlreadyConnected;
+            }
             if connected.len() >= MAX_CONNECTED_PEERS_PER_TORRENT {
-                return false;
+                return SpawnPeerOutcome::AtCapacity;
             }
-            if !connected.insert(key) {
-                return false; // already have an active worker for this peer
-            }
+            connected.insert(key);
         }
 
         let piece_allocator = Arc::clone(piece_allocator);
@@ -1228,7 +1283,7 @@ impl TorrentTask {
             (peer_ip, peer_port, result)
         });
 
-        true
+        SpawnPeerOutcome::Spawned
     }
 }
 
