@@ -10,9 +10,9 @@ import 'package:hydroxy_rc/themes/app_theme.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/models/torrent_structure_ext.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/widgets/tabs/torrent_files_tab.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/widgets/tabs/torrent_peers_tab.dart';
-import 'package:hydroxy_rc/ui/screens/main_content/widgets/tabs/torrent_placeholder_tab.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/widgets/tabs/torrent_trackers_tab.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/widgets/torrent_piece_map.dart';
+import 'package:hydroxy_rc/ui/widgets/info_card.dart';
 
 class MobileTorrentDetailsScreen extends StatefulWidget {
   final TorrentStructure initialTorrent;
@@ -270,28 +270,15 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
             icon: Icon(Icons.arrow_back_rounded, color: colors.titleBarTextColor),
             onPressed: () => Navigator.of(context).pop(),
           ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _torrent.name,
-                style: TextStyle(
-                  color: colors.titleBarTextColor,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(
-                'Status: ${_torrent.status}',
-                style: TextStyle(
-                  color: _getStatusColor(context, _torrent.status),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+          title: Text(
+            _torrent.name,
+            style: TextStyle(
+              color: colors.titleBarTextColor,
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
           actions: [
             // Play / Pause Action
@@ -367,13 +354,17 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
               ],
             ),
           ],
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(40),
-            child: Container(
+        ),
+        body: Column(
+          children: [
+            // TabBar placed cleanly below AppBar to prevent AppBar squashing/clipping
+            Container(
+              width: double.infinity,
               color: colors.detailsPanelBackgroundColor,
               child: TabBar(
                 controller: _tabController,
                 isScrollable: true,
+                tabAlignment: TabAlignment.start,
                 indicatorColor: colors.tabBarActiveIndicatorColor,
                 indicatorWeight: 2.5,
                 labelColor: colors.tabBarActiveTextColor,
@@ -381,50 +372,130 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                 labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                 unselectedLabelStyle: const TextStyle(fontSize: 12),
                 tabs: const [
-                  Tab(icon: Icon(Icons.info_outline, size: 16), text: 'General'),
-                  Tab(icon: Icon(Icons.location_on_outlined, size: 16), text: 'Trackers'),
-                  Tab(icon: Icon(Icons.people_outline, size: 16), text: 'Peers'),
-                  Tab(icon: Icon(Icons.storage_outlined, size: 16), text: 'HTTP Sources'),
-                  Tab(icon: Icon(Icons.folder_open_rounded, size: 16), text: 'Content'),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.info_outline, size: 15),
+                        SizedBox(width: 6),
+                        Text('General'),
+                      ],
+                    ),
+                  ),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.location_on_outlined, size: 15),
+                        SizedBox(width: 6),
+                        Text('Trackers'),
+                      ],
+                    ),
+                  ),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.people_outline, size: 15),
+                        SizedBox(width: 6),
+                        Text('Peers'),
+                      ],
+                    ),
+                  ),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.storage_outlined, size: 15),
+                        SizedBox(width: 6),
+                        Text('HTTP Sources'),
+                      ],
+                    ),
+                  ),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.folder_open_rounded, size: 15),
+                        SizedBox(width: 6),
+                        Text('Content'),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
-          ),
-        ),
-        body: TabBarView(
-          controller: _tabController,
-          children: [
-            // Tab 0: General Tab
-            _buildMobileGeneralTab(context),
+            Divider(color: colors.dividerColor, height: 1),
 
-            // Tab 1: Trackers
-            TorrentTrackersTab(
-              infoHash: _torrent.infoHash,
-              torrentName: _torrent.name,
-            ),
+            // Tab Views
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  // Tab 0: General Tab
+                  _buildMobileGeneralTab(context),
 
-            // Tab 2: Peers
-            TorrentPeersTab(
-              infoHash: _torrent.infoHash,
-              torrentName: _torrent.name,
-            ),
+                  // Tab 1: Trackers
+                  TorrentTrackersTab(
+                    infoHash: _torrent.infoHash,
+                    torrentName: _torrent.name,
+                    compact: true,
+                  ),
 
-            // Tab 3: HTTP Sources
-            TorrentPlaceholderTab(
-              title: 'HTTP Sources',
-              icon: Icons.storage_outlined,
-              torrent: _torrent,
-              mockHeaders: const ['URL', 'Status', 'Speed'],
-            ),
+                  // Tab 2: Peers
+                  TorrentPeersTab(
+                    infoHash: _torrent.infoHash,
+                    torrentName: _torrent.name,
+                    compact: true,
+                  ),
 
-            // Tab 4: Content / Files
-            TorrentFilesTab(
-              infoHash: _torrent.infoHash,
-              torrentName: _torrent.name,
+                  // Tab 3: HTTP Sources
+                  _buildMobileHttpSourcesTab(context),
+
+                  // Tab 4: Content / Files
+                  TorrentFilesTab(
+                    infoHash: _torrent.infoHash,
+                    torrentName: _torrent.name,
+                    compact: true,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildMobileHttpSourcesTab(BuildContext context) {
+    final colors = context.appColors;
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        InfoCard(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 28),
+          child: Column(
+            children: [
+              Icon(
+                Icons.storage_outlined,
+                size: 32,
+                color: Color.fromRGBO(colors.tableSecondaryTextColor.red, colors.tableSecondaryTextColor.green, colors.tableSecondaryTextColor.blue, 0.5),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'No HTTP Sources',
+                style: TextStyle(color: colors.tablePrimaryTextColor, fontSize: 14, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'This torrent has no web seeds (HTTP/URL sources).',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

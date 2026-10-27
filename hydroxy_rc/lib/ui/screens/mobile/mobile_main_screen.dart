@@ -8,7 +8,6 @@ import 'package:hydroxy_rc/network/models.dart';
 import 'package:hydroxy_rc/routes/routes_name.dart';
 import 'package:hydroxy_rc/state/themes_bloc/themes_bloc.dart';
 import 'package:hydroxy_rc/state/torrents_bloc/torrents_bloc.dart';
-import 'package:hydroxy_rc/themes/app_theme.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/models/torrent_structure_ext.dart';
 import 'package:hydroxy_rc/ui/screens/mobile/mobile_torrent_details_screen.dart';
 import 'package:hydroxy_rc/ui/screens/mobile/widgets/mobile_categories_drawer.dart';
@@ -434,10 +433,7 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
             },
           ),
 
-          // Theme Selector Menu
-          _buildThemeSelector(context),
-
-          // More Options Menu (Logs, Logout, Shutdown)
+          // More Options Menu (Theme, Logs, Logout, Shutdown)
           PopupMenuButton<String>(
             icon: Icon(Icons.more_vert_rounded, color: colors.titleBarIconColor),
             color: colors.popupMenuBackgroundColor,
@@ -447,6 +443,9 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
             ),
             onSelected: (val) {
               switch (val) {
+                case 'theme':
+                  _showThemeDialog();
+                  break;
                 case 'logs':
                   LogViewerDialog.show(context);
                   break;
@@ -459,6 +458,16 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
               }
             },
             itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'theme',
+                child: Row(
+                  children: [
+                    Icon(Icons.palette_outlined, size: 16, color: colors.tablePrimaryTextColor),
+                    const SizedBox(width: 8),
+                    Text('Theme', style: TextStyle(color: colors.tablePrimaryTextColor, fontSize: 13)),
+                  ],
+                ),
+              ),
               PopupMenuItem(
                 value: 'logs',
                 child: Row(
@@ -498,6 +507,9 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
         children: [
           // Animated Search Bar Area
           if (_isSearchVisible) _buildSearchBar(context),
+
+          // Mini Status Bar (connection, RAM, total speeds)
+          _buildStatusBar(context),
 
           // Horizontal Status Filter Chips Bar
           _buildStatusFilterChips(context),
@@ -548,9 +560,6 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
               },
             ),
           ),
-
-          // Bottom Mini Status Bar
-          _buildBottomStatusBar(context),
         ],
       ),
     );
@@ -832,7 +841,7 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
     );
   }
 
-  Widget _buildBottomStatusBar(BuildContext context) {
+  Widget _buildStatusBar(BuildContext context) {
     final colors = context.appColors;
 
     return ValueListenableBuilder<DaemonConnectionState>(
@@ -851,10 +860,12 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
                 : 'Connecting...');
 
         return Container(
-          height: 24,
+          height: 26,
           decoration: BoxDecoration(
             color: colors.statusBarBackgroundColor,
-            border: Border(top: BorderSide(color: colors.statusBarBorderColor)),
+            border: Border.symmetric(
+              horizontal: BorderSide(color: colors.statusBarBorderColor),
+            ),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 10),
           child: Row(
@@ -945,47 +956,52 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
     );
   }
 
-  Widget _buildThemeSelector(BuildContext context) {
+  void _showThemeDialog() {
     final colors = context.appColors;
     final themesBloc = context.read<ThemesBloc>();
 
-    return PopupMenuButton<AppTheme>(
-      tooltip: 'Change Theme',
-      icon: Icon(Icons.palette_outlined, color: colors.titleBarIconColor),
-      color: colors.popupMenuBackgroundColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: colors.popupMenuBorderColor),
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.popupMenuBackgroundColor,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(color: colors.popupMenuBorderColor),
+        ),
+        title: Row(
+          children: [
+            Icon(Icons.palette_outlined, color: colors.titleBarLogoColor, size: 20),
+            const SizedBox(width: 8),
+            const Text('Select Theme', style: TextStyle(fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: ThemesBloc.availableThemes.map((theme) {
+            final isSelected = theme.themeCode == colors.themeCode;
+            return ListTile(
+              dense: true,
+              leading: Icon(
+                isSelected ? Icons.check_circle : Icons.circle_outlined,
+                size: 18,
+                color: isSelected ? colors.accentGreenColor : colors.tableSecondaryTextColor,
+              ),
+              title: Text(
+                theme.themeName,
+                style: TextStyle(
+                  color: isSelected ? colors.tablePrimaryTextColor : colors.tableSecondaryTextColor,
+                  fontSize: 14,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
+              onTap: () {
+                themesBloc.add(ChangeThemeEvent(theme));
+                Navigator.of(ctx).pop();
+              },
+            );
+          }).toList(),
+        ),
       ),
-      initialValue: colors,
-      onSelected: (theme) => themesBloc.add(ChangeThemeEvent(theme)),
-      itemBuilder: (context) {
-        return ThemesBloc.availableThemes.map((theme) {
-          final isSelected = theme.themeCode == colors.themeCode;
-          return PopupMenuItem<AppTheme>(
-            value: theme,
-            height: 36,
-            child: Row(
-              children: [
-                Icon(
-                  isSelected ? Icons.check_circle : Icons.circle_outlined,
-                  size: 15,
-                  color: isSelected ? colors.accentGreenColor : colors.tableSecondaryTextColor,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  theme.themeName,
-                  style: TextStyle(
-                    color: isSelected ? colors.tablePrimaryTextColor : colors.tableSecondaryTextColor,
-                    fontSize: 12,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  ),
-                ),
-              ],
-            ),
-          );
-        }).toList();
-      },
     );
   }
 }

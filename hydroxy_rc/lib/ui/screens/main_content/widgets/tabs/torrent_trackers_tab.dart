@@ -4,15 +4,21 @@ import 'package:flutter/services.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
+import 'package:hydroxy_rc/ui/widgets/info_card.dart';
 
 class TorrentTrackersTab extends StatefulWidget {
   final String infoHash;
   final String torrentName;
 
+  /// When true, trackers are shown as a vertical list of cards (mobile layout)
+  /// instead of a wide data table.
+  final bool compact;
+
   const TorrentTrackersTab({
     super.key,
     required this.infoHash,
     required this.torrentName,
+    this.compact = false,
   });
 
   @override
@@ -158,6 +164,10 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
     }
 
     final sortedTrackers = _getSortedTrackers(rawTrackers);
+
+    if (widget.compact) {
+      return _buildCompactList(context, sortedTrackers);
+    }
 
     final headerStyle = TextStyle(
       color: colors.tableHeaderTextColor,
@@ -337,6 +347,119 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
   );
 },
 );
+  }
+
+  void _copyUrl(BuildContext context, String url) {
+    final colors = context.appColors;
+    Clipboard.setData(ClipboardData(text: url));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Copied tracker URL: $url',
+          style: TextStyle(color: colors.snackBarTextColor, fontSize: 13, fontWeight: FontWeight.w500),
+        ),
+        duration: const Duration(seconds: 1),
+        backgroundColor: colors.snackBarBackgroundColor,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Widget _buildCompactList(BuildContext context, List<TrackerStatsSnapshot> trackers) {
+    final colors = context.appColors;
+
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              Text(
+                'Trackers (${trackers.length})',
+                style: TextStyle(
+                  color: colors.tablePrimaryTextColor,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const Spacer(),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: colors.accentAmberColor,
+                  side: BorderSide(color: colors.accentAmberColor, width: 0.8),
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                icon: const Icon(Icons.campaign_outlined, size: 16),
+                label: const Text('Reannounce', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                onPressed: () async {
+                  await reannounceTorrent(infoHash: widget.infoHash);
+                  if (context.mounted) {
+                    _fetchTrackers();
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+        ...trackers.map((tracker) {
+          final statusColor = _statusColor(context, tracker.status);
+          return InfoCard(
+            accentColor: statusColor,
+            onLongPress: () => _copyUrl(context, tracker.url),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        tracker.url,
+                        style: TextStyle(
+                          color: colors.tablePrimaryTextColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () => _copyUrl(context, tracker.url),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(Icons.copy_rounded, size: 14, color: colors.tableSecondaryTextColor),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                InfoFieldGrid(
+                  columns: 2,
+                  fields: [
+                    InfoField(label: 'Status', value: tracker.status, valueColor: statusColor),
+                    InfoField(label: 'Tier', value: '${tracker.tier}'),
+                    InfoField(label: 'Peers', value: '${tracker.peers}', icon: Icons.people_outline),
+                    InfoField(label: 'Reannounce In', value: tracker.reannounceInString, icon: Icons.timer_outlined),
+                  ],
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Color _statusColor(BuildContext context, String status) {
+    final colors = context.appColors;
+    final lower = status.toLowerCase();
+    if (lower.contains('working') || lower.contains('ok')) return colors.accentGreenColor;
+    if (lower.contains('updating')) return colors.accentBlueColor;
+    if (lower.contains('error') || lower.contains('fail')) return colors.accentRedColor;
+    if (lower.contains('not contacted')) return colors.tableSecondaryTextColor;
+    return colors.accentAmberColor;
   }
 
   Widget _buildStatusBadge(BuildContext context, String status) {

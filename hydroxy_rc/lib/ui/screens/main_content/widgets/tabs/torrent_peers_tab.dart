@@ -4,15 +4,21 @@ import 'package:hydroxy_rc/configs/converter.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
+import 'package:hydroxy_rc/ui/widgets/info_card.dart';
 
 class TorrentPeersTab extends StatefulWidget {
   final String infoHash;
   final String torrentName;
 
+  /// When true, peers are shown as a vertical list of cards (mobile layout)
+  /// instead of a wide data table.
+  final bool compact;
+
   const TorrentPeersTab({
     super.key,
     required this.infoHash,
     required this.torrentName,
+    this.compact = false,
   });
 
   @override
@@ -175,6 +181,10 @@ class _TorrentPeersTabState extends State<TorrentPeersTab> {
 
     final sortedPeers = _getSortedPeers(rawPeers);
 
+    if (widget.compact) {
+      return _buildCompactList(context, sortedPeers);
+    }
+
     final headerStyle = TextStyle(
       color: colors.tableHeaderTextColor,
       fontSize: 11,
@@ -313,6 +323,182 @@ class _TorrentPeersTabState extends State<TorrentPeersTab> {
         );
       },
     );
+  }
+
+  static const _compactSortOptions = <int, String>{
+    4: 'Down Speed',
+    5: 'Up Speed',
+    3: 'Progress',
+    6: 'Downloaded',
+    7: 'Uploaded',
+    9: 'Duration',
+    1: 'Client',
+    0: 'IP:Port',
+  };
+
+  String _formatDuration(int secs) {
+    if (secs < 60) return '${secs}s';
+    final m = secs ~/ 60;
+    if (m < 60) return '${m}m ${secs % 60}s';
+    final h = m ~/ 60;
+    return '${h}h ${m % 60}m';
+  }
+
+  Widget _buildCompactList(BuildContext context, List<PeerStatsSnapshot> peers) {
+    final colors = context.appColors;
+
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              Text(
+                'Peers (${peers.length})',
+                style: TextStyle(
+                  color: colors.tablePrimaryTextColor,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const Spacer(),
+              PopupMenuButton<int>(
+                tooltip: 'Sort peers',
+                color: colors.popupMenuBackgroundColor,
+                initialValue: _sortColumnIndex,
+                onSelected: (idx) {
+                  // Selecting the active option flips the direction.
+                  _onSort(idx, idx == _sortColumnIndex ? !_isAscending : false);
+                },
+                itemBuilder: (_) => _compactSortOptions.entries
+                    .map((e) => PopupMenuItem<int>(
+                          value: e.key,
+                          height: 36,
+                          child: Text(e.value, style: TextStyle(color: colors.tablePrimaryTextColor, fontSize: 13)),
+                        ))
+                    .toList(),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isAscending ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+                      size: 14,
+                      color: colors.tableSecondaryTextColor,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _compactSortOptions[_sortColumnIndex] ?? 'Sort',
+                      style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 12),
+                    ),
+                    Icon(Icons.arrow_drop_down, size: 18, color: colors.tableSecondaryTextColor),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        ...peers.map((peer) {
+          final stateColor = _stateColor(context, peer.state);
+          final progress = (peer.progress / 100).clamp(0.0, 1.0);
+          return InfoCard(
+            accentColor: stateColor,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            peer.endpoint,
+                            style: TextStyle(
+                              color: colors.tablePrimaryTextColor,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'monospace',
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            peer.clientId.isNotEmpty ? peer.clientId : 'Unknown client',
+                            style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 11),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildStateBadge(context, peer.state),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 5,
+                          backgroundColor: colors.tableProgressBarTrackColor,
+                          color: colors.accentBlueColor,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${peer.progress.toStringAsFixed(1)}%',
+                      style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 11, fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                InfoFieldGrid(
+                  columns: 3,
+                  fields: [
+                    InfoField(
+                      label: 'Down',
+                      value: formatBytesDynamic(peer.downloadSpeed.toStringAsFixed(0), isSpeed: true),
+                      valueColor: colors.downloadSpeedColor,
+                      icon: Icons.arrow_downward_rounded,
+                    ),
+                    InfoField(
+                      label: 'Up',
+                      value: formatBytesDynamic(peer.uploadSpeed.toStringAsFixed(0), isSpeed: true),
+                      valueColor: colors.uploadSpeedColor,
+                      icon: Icons.arrow_upward_rounded,
+                    ),
+                    InfoField(label: 'Pieces', value: '${peer.piecesReceived}'),
+                    InfoField(label: 'Downloaded', value: formatBytesDynamic(peer.downloadedBytes.toString())),
+                    InfoField(label: 'Uploaded', value: formatBytesDynamic(peer.uploadedBytes.toString())),
+                    InfoField(label: 'Connected', value: _formatDuration(peer.connectedDurationSecs)),
+                  ],
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Color _stateColor(BuildContext context, String state) {
+    final colors = context.appColors;
+    switch (state.toLowerCase()) {
+      case 'downloading':
+        return colors.accentGreenColor;
+      case 'connected':
+        return colors.accentBlueColor;
+      case 'choked':
+      case 'connecting':
+        return colors.accentAmberColor;
+      default:
+        return colors.tableSecondaryTextColor;
+    }
   }
 
   Widget _buildStateBadge(BuildContext context, String state) {

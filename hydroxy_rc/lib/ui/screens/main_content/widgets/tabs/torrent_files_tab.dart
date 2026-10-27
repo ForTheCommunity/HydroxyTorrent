@@ -4,6 +4,7 @@ import 'package:hydroxy_rc/configs/converter.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
+import 'package:hydroxy_rc/ui/widgets/info_card.dart';
 
 class FileTreeNode {
   final String name;
@@ -61,10 +62,15 @@ class TorrentFilesTab extends StatefulWidget {
   final String infoHash;
   final String torrentName;
 
+  /// When true, files are shown as a vertical list of cards (mobile layout)
+  /// instead of a wide data table.
+  final bool compact;
+
   const TorrentFilesTab({
     super.key,
     required this.infoHash,
     required this.torrentName,
+    this.compact = false,
   });
 
   @override
@@ -454,6 +460,10 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
 
     final visibleTreeItems = _getVisibleTreeItems(treeNodes);
 
+    if (widget.compact) {
+      return _buildCompactList(context, rawFiles.length, totalBytes, treeNodes, visibleTreeItems);
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -703,6 +713,237 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
                       }).toList(),
                     ),
                   ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCompactList(
+    BuildContext context,
+    int fileCount,
+    int totalBytes,
+    List<FileTreeNode> treeNodes,
+    List<_VisibleTreeItem> visibleItems,
+  ) {
+    final colors = context.appColors;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                height: 36,
+                child: TextField(
+                  controller: _searchController,
+                  style: TextStyle(color: colors.searchBarTextColor, fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'Filter files...',
+                    hintStyle: TextStyle(color: colors.searchBarHintColor, fontSize: 13),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                    isDense: true,
+                    prefixIcon: Icon(Icons.search, size: 16, color: colors.searchBarIconColor),
+                    suffixIcon: _searchFilter.isNotEmpty
+                        ? IconButton(
+                            icon: Icon(Icons.clear, size: 16, color: colors.searchBarIconColor),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchFilter = '');
+                            },
+                          )
+                        : null,
+                    filled: true,
+                    fillColor: colors.searchBarBackgroundColor,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: colors.searchBarBorderColor),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: colors.searchBarBorderColor),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: colors.searchBarActiveBorderColor),
+                    ),
+                  ),
+                  onChanged: (val) => setState(() => _searchFilter = val),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$fileCount file${fileCount == 1 ? '' : 's'} • ${formatBytesDynamic(totalBytes.toString())}',
+                      style: TextStyle(
+                        color: colors.tablePrimaryTextColor,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      foregroundColor: colors.tableSecondaryTextColor,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () => _toggleExpandAll(treeNodes),
+                    icon: Icon(_expandedPaths.isNotEmpty ? Icons.unfold_less : Icons.unfold_more, size: 16),
+                    label: Text(
+                      _expandedPaths.isNotEmpty ? 'Collapse All' : 'Expand All',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            itemCount: visibleItems.length,
+            itemBuilder: (context, index) {
+              final item = visibleItems[index];
+              final node = item.node;
+              final isDirectory = node.isDirectory;
+              final isExpanded = _expandedPaths.contains(node.fullPath) || _searchFilter.isNotEmpty;
+              final percent = (node.progress * 100).clamp(0.0, 100.0);
+              final isDone = percent >= 99.99;
+              final progressColor = isDone ? colors.tableProgressBarProgressColor : colors.accentBlueColor;
+
+              return InfoCard(
+                margin: EdgeInsets.only(left: (item.depth * 14.0).clamp(0.0, 56.0), bottom: 8),
+                padding: const EdgeInsets.fromLTRB(10, 10, 12, 10),
+                onTap: isDirectory
+                    ? () {
+                        setState(() {
+                          if (_expandedPaths.contains(node.fullPath)) {
+                            _expandedPaths.remove(node.fullPath);
+                          } else {
+                            _expandedPaths.add(node.fullPath);
+                          }
+                        });
+                      }
+                    : null,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: Color.fromRGBO(
+                          (isDirectory ? colors.accentAmberColor : colors.accentBlueColor).red,
+                          (isDirectory ? colors.accentAmberColor : colors.accentBlueColor).green,
+                          (isDirectory ? colors.accentAmberColor : colors.accentBlueColor).blue,
+                          0.15,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        isDirectory ? (isExpanded ? Icons.folder_open : Icons.folder) : _getFileIcon(node.name),
+                        size: 18,
+                        color: isDirectory ? colors.accentAmberColor : colors.accentBlueColor,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  node.name,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: colors.tablePrimaryTextColor,
+                                    fontSize: 12,
+                                    fontWeight: isDirectory ? FontWeight.bold : FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              if (isDirectory)
+                                Icon(
+                                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                                  size: 18,
+                                  color: colors.tableSecondaryTextColor,
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(3),
+                                  child: LinearProgressIndicator(
+                                    value: node.progress.clamp(0.0, 1.0),
+                                    minHeight: 5,
+                                    backgroundColor: colors.tableProgressBarTrackColor,
+                                    valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${percent.toStringAsFixed(1)}%',
+                                style: TextStyle(
+                                  color: isDone ? colors.tableProgressBarProgressColor : colors.tableSecondaryTextColor,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Text(
+                                formatBytesDynamic(node.totalSize.toString()),
+                                style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 11),
+                              ),
+                              if (isDirectory) ...[
+                                Text(
+                                  '  •  ${node.children.length} item${node.children.length == 1 ? '' : 's'}',
+                                  style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 11),
+                                ),
+                              ],
+                              const Spacer(),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: colors.scaffoldBackgroundColor,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: colors.dataCardBorderColor, width: 0.5),
+                                ),
+                                child: Text(
+                                  node.priority,
+                                  style: TextStyle(
+                                    color: colors.tableSecondaryTextColor,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               );
             },
