@@ -259,6 +259,49 @@ Future<String> getDaemonLogs({String? serverHostUrl}) async {
   return response.data?.toString() ?? '';
 }
 
+Future<List<String>> getMinorLogs({
+  required String subId,
+  String? serverHostUrl,
+}) async {
+  final client = ApiClient.instance;
+  if (serverHostUrl != null &&
+      serverHostUrl.trim().isNotEmpty &&
+      serverHostUrl != 'serverHostUrl') {
+    client.setBaseUrl(serverHostUrl);
+  }
+
+  final response = await client.dio.get(
+    '${client.baseUrl}/api/logs/minor',
+    queryParameters: {'sub_id': subId},
+  );
+  if (response.data is Map<String, dynamic>) {
+    final rawList = (response.data as Map<String, dynamic>)['logs'];
+    if (rawList is List) {
+      return rawList.map((e) => e.toString()).toList();
+    }
+  }
+  return const [];
+}
+
+Future<void> unsubscribeMinorLogs({
+  required String subId,
+  String? serverHostUrl,
+}) async {
+  final client = ApiClient.instance;
+  if (serverHostUrl != null &&
+      serverHostUrl.trim().isNotEmpty &&
+      serverHostUrl != 'serverHostUrl') {
+    client.setBaseUrl(serverHostUrl);
+  }
+
+  try {
+    await client.dio.delete(
+      '${client.baseUrl}/api/logs/minor',
+      queryParameters: {'sub_id': subId},
+    );
+  } catch (_) {}
+}
+
 Future<bool> shutdownDaemon({String? serverHostUrl}) async {
   final client = ApiClient.instance;
   if (serverHostUrl != null &&

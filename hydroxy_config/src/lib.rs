@@ -135,8 +135,6 @@ impl HydroxyConfig {
     pub fn init() -> Result<Self, ConfigError> {
         let config_dir = Self::config_dir()?;
 
-        info!("CONF DIR : {:?}", config_dir);
-
         if !config_dir.exists() {
             fs::create_dir_all(&config_dir).map_err(|e| {
                 ConfigError::Error(format!("Failed to create config directory: {}", e))

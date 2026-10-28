@@ -93,6 +93,87 @@ impl Write for RotatingLogWriter {
     }
 }
 
+/// Routes major events (`target: "major"`) to the persistent rotating log file on disk,
+/// and broadcasts minor events live without storing them on disk or in memory.
+#[derive(Clone)]
+struct SplitLogMakeWriter {
+    major_file: Option<RotatingLogWriter>,
+    foreground: bool,
+}
+
+enum LogDestination {
+    Major {
+        file: Option<RotatingLogWriter>,
+        foreground: bool,
+    },
+    MinorBroadcast(Vec<u8>),
+    Discard,
+}
+
+impl Write for LogDestination {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            LogDestination::Major { file, foreground } => {
+                if let Some(w) = file {
+                    let _ = w.write(buf);
+                }
+                if *foreground {
+                    let _ = std::io::stdout().write_all(buf);
+                }
+                Ok(buf.len())
+            }
+            LogDestination::MinorBroadcast(vec) => {
+                vec.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            LogDestination::Discard => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for LogDestination {
+    fn drop(&mut self) {
+        if let LogDestination::MinorBroadcast(buf) = self {
+            if !buf.is_empty() {
+                let text = String::from_utf8_lossy(buf);
+                let trimmed = text.trim_end_matches(&['\r', '\n'][..]);
+                if !trimmed.is_empty() {
+                    hydroxy_engine::log_broadcast::broadcast_minor_log(trimmed.to_string());
+                }
+            }
+        }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SplitLogMakeWriter {
+    type Writer = LogDestination;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        if hydroxy_engine::log_broadcast::has_subscribers() {
+            LogDestination::MinorBroadcast(Vec::with_capacity(128))
+        } else {
+            LogDestination::Discard
+        }
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        if meta.target() == "major" {
+            LogDestination::Major {
+                file: self.major_file.clone(),
+                foreground: self.foreground,
+            }
+        } else if hydroxy_engine::log_broadcast::has_subscribers() {
+            LogDestination::MinorBroadcast(Vec::with_capacity(128))
+        } else {
+            LogDestination::Discard
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_foreground = args.iter().any(|a| a == "--foreground" || a == "-f");
@@ -183,32 +264,19 @@ fn main() {
         }
     }
 
-    // Initialize tracing: write to size-bounded rotating log file in daemon mode, stdout + rotating log file in foreground
-    if is_foreground {
-        if let Ok(log_path) = HydroxyConfig::log_file_path() {
-            if let Ok(writer) = RotatingLogWriter::open(&log_path) {
-                use tracing_subscriber::fmt::writer::MakeWriterExt;
-                tracing_subscriber::fmt()
-                    .with_writer(std::io::stdout.and(move || writer.clone()))
-                    .init();
-            } else {
-                tracing_subscriber::fmt::init();
-            }
-        } else {
-            tracing_subscriber::fmt::init();
-        }
-    } else if let Ok(log_path) = HydroxyConfig::log_file_path() {
-        if let Ok(writer) = RotatingLogWriter::open(&log_path) {
-            tracing_subscriber::fmt()
-                .with_writer(move || writer.clone())
-                .with_ansi(false)
-                .init();
-        } else {
-            tracing_subscriber::fmt::init();
-        }
-    } else {
-        tracing_subscriber::fmt::init();
-    }
+    // Initialize tracing: major events are saved to disk log file; minor events are broadcast live only when watched
+    let major_file = HydroxyConfig::log_file_path()
+        .ok()
+        .and_then(|p| RotatingLogWriter::open(&p).ok());
+    let split_writer = SplitLogMakeWriter {
+        major_file,
+        foreground: is_foreground,
+    };
+    tracing_subscriber::fmt()
+        .with_writer(split_writer)
+        .with_target(false)
+        .with_ansi(false)
+        .init();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .max_blocking_threads(32)
@@ -221,9 +289,9 @@ fn main() {
 }
 
 async fn run_daemon() {
-    info!("Hydroxy Torrent Initialized (Daemon Mode)...");
+    info!(target: "major", "Hydroxy Torrent Initialized (Daemon Mode)...");
     if let Ok(cfg_path) = HydroxyConfig::config_file_path() {
-        info!("Config File:   {}", cfg_path.display());
+        info!(target: "major", "Config File:   {}", cfg_path.display());
     }
 
     let stats_registry = Arc::new(StatsRegistry::new());
@@ -232,22 +300,22 @@ async fn run_daemon() {
     let config = match HydroxyConfig::init() {
         Ok(cfg) => cfg,
         Err(e) => {
-            error!("Configuration initialization error: {}", e);
+            error!(target: "major", "Configuration initialization error: {}", e);
             return;
         }
     };
 
     if let Some(ref creds) = config.newly_generated_credentials {
-        info!("============================================================");
-        info!("🔑 Web UI & RPC Access Credentials Generated:");
-        info!("   Username: {}", creds.username);
-        info!("   Password: {}", creds.password);
-        info!("============================================================");
+        info!(target: "major", "============================================================");
+        info!(target: "major", "🔑 Web UI & RPC Access Credentials Generated:");
+        info!(target: "major", "   Username: {}", creds.username);
+        info!(target: "major", "   Password: {}", creds.password);
+        info!(target: "major", "============================================================");
     }
 
-    info!("Peer Listen Port: {}", config.network_config.listen_port);
-    info!("Watch Dir: {}", config.storage_config.watch_directory);
-    info!("Download Dir: {}", config.storage_config.download_directory);
+    info!(target: "major", "Peer Listen Port: {}", config.network_config.listen_port);
+    info!(target: "major", "Watch Dir: {}", config.storage_config.watch_directory);
+    info!(target: "major", "Download Dir: {}", config.storage_config.download_directory);
 
     let _ = std::fs::create_dir_all(&config.storage_config.watch_directory);
     let _ = std::fs::create_dir_all(&config.storage_config.download_directory);
@@ -257,7 +325,7 @@ async fn run_daemon() {
     let engine_control_registry = Arc::clone(&control_registry);
     tokio::spawn(async move {
         if let Err(e) = HydroxyEngine::start(engine_stats_registry, engine_control_registry).await {
-            warn!("Engine error -> {}", e);
+            warn!(target: "major", "Engine error -> {}", e);
         }
     });
 
@@ -278,16 +346,16 @@ async fn run_daemon() {
             )
             .await
             {
-                error!("RPC server error: {}", e);
+                error!(target: "major", "RPC server error: {}", e);
             }
         });
     } else {
-        info!("RPC is disabled. Web UI automatically disabled.");
+        info!(target: "major", "RPC is disabled. Web UI automatically disabled.");
     }
 
     // Keep process alive until Ctrl+C / SIGTERM
     tokio::signal::ctrl_c().await.unwrap();
-    info!("Shutdown signal received, closing Hydroxy Torrent...");
+    info!(target: "major", "Shutdown signal received, closing Hydroxy Torrent...");
     control_registry
         .broadcast_command(hydroxy_engine::control::TorrentCommand::Shutdown)
         .await;

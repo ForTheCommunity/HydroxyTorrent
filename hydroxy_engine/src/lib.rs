@@ -11,6 +11,7 @@ use crate::stats::stats_registry::StatsRegistry;
 
 pub mod control;
 mod errors;
+pub mod log_broadcast;
 mod manager;
 pub mod peer_listener;
 mod peer_worker;
@@ -33,12 +34,12 @@ impl HydroxyEngine {
         control_registry: Arc<TorrentControlRegistry>,
     ) -> Result<()> {
         let peer_id = get_peer_id();
-        info!("Generated Random Peer ID -> {}", str::from_utf8(&peer_id)?);
+        info!(target: "minor", "Generated Random Peer ID -> {}", str::from_utf8(&peer_id)?);
 
         let config = match HydroxyConfig::init() {
             Ok(cfg) => cfg,
             Err(e) => {
-                warn!("Configuration load warning in HydroxyEngine: {}", e);
+                warn!(target: "major", "Configuration load warning in HydroxyEngine: {}", e);
                 return Err(anyhow::anyhow!("Failed to initialize config: {}", e));
             }
         };
@@ -55,6 +56,7 @@ impl HydroxyEngine {
         .await
         {
             warn!(
+                target: "major",
                 "Failed to bind peer incoming listener on {}:{}: {}",
                 listen_address, listen_port, e
             );

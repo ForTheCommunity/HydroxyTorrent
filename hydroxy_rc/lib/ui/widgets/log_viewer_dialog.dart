@@ -8,6 +8,8 @@ import 'package:hydroxy_rc/network/api.dart';
 
 enum LogLevel { all, error, warn, info, debug, trace, normal }
 
+enum LogCategory { major, minor }
+
 class _LogLine {
   final int number;
   final String text;
@@ -60,16 +62,28 @@ class LogViewerDialog extends StatefulWidget {
 }
 
 class _LogViewerDialogState extends State<LogViewerDialog> {
+  static const int _maxLiveMinorLines = 1000;
+
   final ScrollController _verticalController = ScrollController();
   final ScrollController _horizontalController = ScrollController();
   final TextEditingController _searchController = TextEditingController();
 
+  late final String _subId;
   Timer? _timer;
-  String _rawLogs = '';
-  List<_LogLine> _parsedLines = [];
-  bool _isLoading = true;
-  bool _autoScroll = true;
+  bool _isPolling = false;
 
+  LogCategory _selectedCategory = LogCategory.major;
+
+  // Major (Disk-backed) logs state
+  String _rawMajorLogs = '';
+  List<_LogLine> _majorLines = [];
+  bool _isLoadingMajor = true;
+
+  // Minor (Live Broadcast only, ephemeral) logs state
+  final List<_LogLine> _minorLines = [];
+  int _nextMinorLineNumber = 1;
+
+  bool _autoScroll = true;
   bool _isSearchVisible = false;
   String _searchQuery = '';
   LogLevel _selectedLevelFilter = LogLevel.all;
@@ -77,30 +91,76 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
   @override
   void initState() {
     super.initState();
-    _fetchLogs();
-    _timer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (mounted) {
-        _fetchLogs(isAuto: true);
-      }
-    });
+    _subId =
+        'rc_${DateTime.now().microsecondsSinceEpoch}_${math.Random().nextInt(999999)}';
+    _startPollingForCurrentCategory();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    if (_selectedCategory == LogCategory.minor) {
+      unsubscribeMinorLogs(subId: _subId);
+    }
     _verticalController.dispose();
     _horizontalController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _fetchLogs({bool isAuto = false}) async {
+  void _startPollingForCurrentCategory() {
+    _timer?.cancel();
+    if (_selectedCategory == LogCategory.major) {
+      _fetchMajorLogs();
+      _timer = Timer.periodic(const Duration(seconds: 2), (_) {
+        if (mounted) {
+          _fetchMajorLogs(isAuto: true);
+        }
+      });
+    } else {
+      _pollMinorLogs();
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          _pollMinorLogs();
+        }
+      });
+    }
+  }
+
+  void _switchCategory(LogCategory category) {
+    if (_selectedCategory == category) return;
+    final previous = _selectedCategory;
+    setState(() {
+      _selectedCategory = category;
+    });
+    if (previous == LogCategory.minor) {
+      unsubscribeMinorLogs(subId: _subId);
+    }
+    _startPollingForCurrentCategory();
+    if (_autoScroll) {
+      _scrollToBottom();
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_verticalController.hasClients) {
+        _verticalController.jumpTo(
+          _verticalController.position.maxScrollExtent,
+        );
+      }
+    });
+  }
+
+  Future<void> _fetchMajorLogs({bool isAuto = false}) async {
+    if (_isPolling) return;
+    _isPolling = true;
     try {
       final logs = await getDaemonLogs();
-      if (mounted) {
-        final shouldScroll = _autoScroll && (isAuto || _isLoading);
+      if (mounted && _selectedCategory == LogCategory.major) {
+        final shouldScroll = _autoScroll && (isAuto || _isLoadingMajor);
         final trimmed = logs.trim();
-        final raw = trimmed.isEmpty ? 'No logs recorded yet.' : logs;
+        final raw = trimmed.isEmpty ? 'No major events recorded yet.' : logs;
 
         final rawLines = raw.split('\n');
         final parsed = <_LogLine>[];
@@ -116,40 +176,88 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
         }
 
         setState(() {
-          _rawLogs = raw;
-          _parsedLines = parsed;
-          _isLoading = false;
+          _rawMajorLogs = raw;
+          _majorLines = parsed;
+          _isLoadingMajor = false;
         });
 
         if (shouldScroll) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (_verticalController.hasClients) {
-              _verticalController.jumpTo(
-                _verticalController.position.maxScrollExtent,
-              );
-            }
-          });
+          _scrollToBottom();
         }
       }
     } catch (e) {
-      if (mounted && !_isLoading) {
+      if (mounted && !_isLoadingMajor) {
         // Silently keep existing logs on polling failure
       } else if (mounted) {
-        final errText = 'Failed to fetch logs: $e\nEnsure the daemon is running.';
+        final errText =
+            'Failed to fetch major logs: $e\nEnsure the daemon is running.';
         setState(() {
-          _rawLogs = errText;
-          _parsedLines = [
+          _rawMajorLogs = errText;
+          _majorLines = [
             _LogLine(number: 1, text: errText, level: LogLevel.error),
           ];
-          _isLoading = false;
+          _isLoadingMajor = false;
         });
       }
+    } finally {
+      _isPolling = false;
     }
   }
 
+  Future<void> _pollMinorLogs() async {
+    if (_isPolling) return;
+    _isPolling = true;
+    try {
+      final incoming = await getMinorLogs(subId: _subId);
+      if (mounted &&
+          _selectedCategory == LogCategory.minor &&
+          incoming.isNotEmpty) {
+        setState(() {
+          for (final text in incoming) {
+            for (final subLine in text.split('\n')) {
+              if (subLine.trim().isEmpty) continue;
+              _minorLines.add(
+                _LogLine(
+                  number: _nextMinorLineNumber++,
+                  text: subLine,
+                  level: _LogLine.detectLevel(subLine),
+                ),
+              );
+            }
+          }
+          if (_minorLines.length > _maxLiveMinorLines) {
+            _minorLines.removeRange(
+              0,
+              _minorLines.length - _maxLiveMinorLines,
+            );
+          }
+        });
+
+        if (_autoScroll) {
+          _scrollToBottom();
+        }
+      }
+    } catch (_) {
+      // Ignore transient poll errors on live stream
+    } finally {
+      _isPolling = false;
+    }
+  }
+
+  List<_LogLine> get _activeLines =>
+      _selectedCategory == LogCategory.major ? _majorLines : _minorLines;
+
+  String get _activeRawText {
+    if (_selectedCategory == LogCategory.major) {
+      return _rawMajorLogs;
+    }
+    return _minorLines.map((l) => l.text).join('\n');
+  }
+
   List<_LogLine> _getFilteredLines() {
-    return _parsedLines.where((line) {
-      if (_selectedLevelFilter != LogLevel.all && line.level != _selectedLevelFilter) {
+    return _activeLines.where((line) {
+      if (_selectedLevelFilter != LogLevel.all &&
+          line.level != _selectedLevelFilter) {
         return false;
       }
       if (_searchQuery.isNotEmpty) {
@@ -286,13 +394,19 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = context.appColors;
+    final activeLines = _activeLines;
     final filteredLines = _getFilteredLines();
-    final maxLineNumber = _parsedLines.isEmpty ? 1 : _parsedLines.last.number;
+    final maxLineNumber = activeLines.isEmpty ? 1 : activeLines.last.number;
     final padWidth = math.max(2, maxLineNumber.toString().length);
 
-    final errorCount = _parsedLines.where((l) => l.level == LogLevel.error).length;
-    final warnCount = _parsedLines.where((l) => l.level == LogLevel.warn).length;
-    final infoCount = _parsedLines.where((l) => l.level == LogLevel.info).length;
+    final errorCount =
+        activeLines.where((l) => l.level == LogLevel.error).length;
+    final warnCount =
+        activeLines.where((l) => l.level == LogLevel.warn).length;
+    final infoCount =
+        activeLines.where((l) => l.level == LogLevel.info).length;
+
+    final isMinor = _selectedCategory == LogCategory.minor;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D1117),
@@ -308,7 +422,13 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.terminal_rounded, color: Color(0xFF56D364), size: 18),
+            Icon(
+              isMinor ? Icons.sensors_rounded : Icons.terminal_rounded,
+              color: isMinor
+                  ? const Color(0xFF58A6FF)
+                  : const Color(0xFF56D364),
+              size: 18,
+            ),
             const SizedBox(width: 6),
             const Text(
               'Daemon Logs',
@@ -320,24 +440,28 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             ),
             const SizedBox(width: 8),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
                 color: const Color(0xFF21262D),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: const Color(0xFF30363D), width: 0.8),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    Icons.fiber_manual_record,
-                    size: 7,
-                    color: Color(0xFF56D364),
+                    isMinor
+                        ? Icons.fiber_manual_record
+                        : Icons.save_outlined,
+                    size: 8,
+                    color: isMinor
+                        ? const Color(0xFF58A6FF)
+                        : const Color(0xFF56D364),
                   ),
-                  SizedBox(width: 3),
+                  const SizedBox(width: 4),
                   Text(
-                    'Live',
-                    style: TextStyle(color: Colors.white70, fontSize: 9),
+                    isMinor ? 'Live Logs' : 'Saved Logs',
+                    style: const TextStyle(color: Colors.white70, fontSize: 9.5),
                   ),
                 ],
               ),
@@ -345,15 +469,36 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
           ],
         ),
         actions: [
+          if (isMinor && _minorLines.isNotEmpty)
+            IconButton(
+              tooltip: 'Clear Live Minor Logs',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              icon: const Icon(
+                Icons.delete_sweep_rounded,
+                size: 20,
+                color: Colors.white70,
+              ),
+              onPressed: () {
+                setState(() {
+                  _minorLines.clear();
+                  _nextMinorLineNumber = 1;
+                });
+              },
+            ),
+
           // Search Toggle
           IconButton(
             tooltip: _isSearchVisible ? 'Close Search' : 'Search Logs',
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 4),
             icon: Icon(
-              _isSearchVisible ? Icons.search_off_rounded : Icons.search_rounded,
+              _isSearchVisible
+                  ? Icons.search_off_rounded
+                  : Icons.search_rounded,
               size: 20,
-              color: _isSearchVisible ? const Color(0xFF56D364) : Colors.white70,
+              color:
+                  _isSearchVisible ? const Color(0xFF56D364) : Colors.white70,
             ),
             onPressed: () {
               setState(() {
@@ -372,7 +517,9 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 4),
             icon: Icon(
-              _autoScroll ? Icons.vertical_align_bottom_rounded : Icons.pause_rounded,
+              _autoScroll
+                  ? Icons.vertical_align_bottom_rounded
+                  : Icons.pause_rounded,
               size: 20,
               color: _autoScroll ? const Color(0xFF56D364) : Colors.white38,
             ),
@@ -388,9 +535,13 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             tooltip: 'Copy all logs',
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 6),
-            icon: const Icon(Icons.copy_rounded, size: 18, color: Colors.white70),
+            icon: const Icon(
+              Icons.copy_rounded,
+              size: 18,
+              color: Colors.white70,
+            ),
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: _rawLogs));
+              Clipboard.setData(ClipboardData(text: _activeRawText));
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
@@ -414,6 +565,36 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
       body: SafeArea(
         child: Column(
           children: [
+            // Log Type Selector Bar (Major Events vs Minor Events)
+            Container(
+              color: const Color(0xFF161B22),
+              padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildCategoryTab(
+                      title: 'Major Events (Saved)',
+                      subtitle: 'Torrent added, found, completed, removed',
+                      icon: Icons.event_note_rounded,
+                      category: LogCategory.major,
+                      activeColor: const Color(0xFF56D364),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _buildCategoryTab(
+                      title: 'Minor Events (Live Broadcast)',
+                      subtitle:
+                          'Piece I/O, tracker announce, PEX, peer timeouts',
+                      icon: Icons.sensors_rounded,
+                      category: LogCategory.minor,
+                      activeColor: const Color(0xFF58A6FF),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
             // Search Bar if open
             if (_isSearchVisible)
               Container(
@@ -427,13 +608,25 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                     decoration: InputDecoration(
                       hintText: 'Filter log output...',
-                      hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                      hintStyle:
+                          const TextStyle(color: Colors.white38, fontSize: 13),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 0,
+                      ),
                       isDense: true,
-                      prefixIcon: const Icon(Icons.search, size: 16, color: Colors.white54),
+                      prefixIcon: const Icon(
+                        Icons.search,
+                        size: 16,
+                        color: Colors.white54,
+                      ),
                       suffixIcon: _searchQuery.isNotEmpty
                           ? IconButton(
-                              icon: const Icon(Icons.clear, size: 16, color: Colors.white54),
+                              icon: const Icon(
+                                Icons.clear,
+                                size: 16,
+                                color: Colors.white54,
+                              ),
                               onPressed: () {
                                 _searchController.clear();
                                 setState(() => _searchQuery = '');
@@ -444,15 +637,18 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                       fillColor: const Color(0xFF0D1117),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
-                        borderSide: const BorderSide(color: Color(0xFF30363D)),
+                        borderSide:
+                            const BorderSide(color: Color(0xFF30363D)),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
-                        borderSide: const BorderSide(color: Color(0xFF30363D)),
+                        borderSide:
+                            const BorderSide(color: Color(0xFF30363D)),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
-                        borderSide: const BorderSide(color: Color(0xFF56D364)),
+                        borderSide:
+                            const BorderSide(color: Color(0xFF56D364)),
                       ),
                     ),
                     onChanged: (val) {
@@ -470,13 +666,29 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
-                  _buildFilterChip('All (${_parsedLines.length})', LogLevel.all, const Color(0xFF58A6FF)),
+                  _buildFilterChip(
+                    'All (${activeLines.length})',
+                    LogLevel.all,
+                    const Color(0xFF58A6FF),
+                  ),
                   const SizedBox(width: 6),
-                  _buildFilterChip('Error ($errorCount)', LogLevel.error, const Color(0xFFFF5555)),
+                  _buildFilterChip(
+                    'Error ($errorCount)',
+                    LogLevel.error,
+                    const Color(0xFFFF5555),
+                  ),
                   const SizedBox(width: 6),
-                  _buildFilterChip('Warn ($warnCount)', LogLevel.warn, const Color(0xFFFFCC00)),
+                  _buildFilterChip(
+                    'Warn ($warnCount)',
+                    LogLevel.warn,
+                    const Color(0xFFFFCC00),
+                  ),
                   const SizedBox(width: 6),
-                  _buildFilterChip('Info ($infoCount)', LogLevel.info, const Color(0xFF56D364)),
+                  _buildFilterChip(
+                    'Info ($infoCount)',
+                    LogLevel.info,
+                    const Color(0xFF56D364),
+                  ),
                 ],
               ),
             ),
@@ -484,7 +696,7 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
 
             // Main Log Terminal
             Expanded(
-              child: _isLoading
+              child: (_selectedCategory == LogCategory.major && _isLoadingMajor)
                   ? const Center(
                       child: SizedBox(
                         width: 28,
@@ -497,11 +709,35 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                     )
                   : filteredLines.isEmpty
                       ? Center(
-                          child: Text(
-                            _searchQuery.isNotEmpty || _selectedLevelFilter != LogLevel.all
-                                ? 'No logs match current filter.'
-                                : 'No logs recorded yet.',
-                            style: const TextStyle(color: Color(0xFF6E7681), fontSize: 13),
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isMinor
+                                      ? Icons.sensors_rounded
+                                      : Icons.event_note_rounded,
+                                  size: 32,
+                                  color: const Color(0xFF484F58),
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  _searchQuery.isNotEmpty ||
+                                          _selectedLevelFilter != LogLevel.all
+                                      ? 'No logs match current filter.'
+                                      : isMinor
+                                          ? 'Listening for live minor events...\n(Events are broadcast live while watching and are never saved to disk or memory.)'
+                                          : 'No major logs recorded yet.',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Color(0xFF6E7681),
+                                    fontSize: 13,
+                                    height: 1.5,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         )
                       : Scrollbar(
@@ -534,6 +770,71 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                             ),
                           ),
                         ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCategoryTab({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required LogCategory category,
+    required Color activeColor,
+  }) {
+    final isSelected = _selectedCategory == category;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => _switchCategory(category),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? activeColor.withValues(alpha: 0.14)
+              : const Color(0xFF0D1117),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? activeColor : const Color(0xFF30363D),
+            width: isSelected ? 1.2 : 0.8,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isSelected ? activeColor : const Color(0xFF8B949E),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isSelected ? Colors.white : const Color(0xFFC9D1D9),
+                      fontSize: 12,
+                      fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF8B949E),
+                      fontSize: 10,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

@@ -13,10 +13,10 @@ use tracing::info;
 use crate::{
     control::TorrentControlRegistry,
     remote::api::{
-        auth_middleware, auth_status_handler, get_logs, get_system_stats, get_torrent_detail,
-        get_torrents, login_handler, logout_handler, pause_torrent, reannounce_torrent,
-        recheck_torrent, remove_torrent, resume_torrent, set_sequential_download, shutdown_daemon,
-        ServerState,
+        auth_middleware, auth_status_handler, get_logs, get_minor_logs, get_system_stats,
+        get_torrent_detail, get_torrents, login_handler, logout_handler, pause_torrent,
+        reannounce_torrent, recheck_torrent, remove_torrent, resume_torrent,
+        set_sequential_download, shutdown_daemon, unsubscribe_minor_logs, ServerState,
     },
     stats::stats_registry::StatsRegistry,
 };
@@ -53,6 +53,11 @@ pub async fn start_server(
         .route("/torrent/:info_hash/sequential", post(set_sequential_download))
         .route("/torrent/:info_hash/remove", post(remove_torrent).delete(remove_torrent))
         .route("/logs", get(get_logs))
+        .route(
+            "/logs/minor",
+            get(get_minor_logs).delete(unsubscribe_minor_logs),
+        )
+        .route("/logs/minor/unsubscribe", post(unsubscribe_minor_logs))
         .route("/shutdown", post(shutdown_daemon).get(shutdown_daemon))
         .route("/system/stats", get(get_system_stats))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -103,7 +108,7 @@ pub async fn start_server(
 
     let bind_address = format!("{}:{}", listen_address, listen_port);
     let listener = TcpListener::bind(&bind_address).await?;
-    info!("Serving Web UI at http://{}/", bind_address);
+    info!(target: "major", "Serving Web UI & RPC at http://{}/", bind_address);
 
     axum::serve(listener, app).await?;
 

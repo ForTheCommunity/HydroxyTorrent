@@ -56,10 +56,14 @@ pub struct TorrentTask {
 
 impl TorrentTask {
     pub async fn start(self, torrent_info: TorrentInfo) -> Result<(), EngineError> {
-        info!("Torrent Task Started...");
-
         let info_hash = self.info_hash;
         let info_hash_sha1 = OtherInfos::to_sha1(&info_hash);
+        info!(
+            target: "major",
+            "Torrent task started: '{}' ({})",
+            torrent_info.info.name,
+            info_hash_sha1
+        );
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<TorrentCommand>(32);
         self.control_registry.register(&info_hash_sha1, cmd_tx);
@@ -211,7 +215,11 @@ impl TorrentTask {
         let is_active_for_announce = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let (mut slot_rx, is_active_now) = if all_done {
-            info!("All pieces already downloaded — torrent complete (seeding)");
+            info!(
+                target: "major",
+                "Torrent complete and seeding: ({})",
+                info_hash_sha1
+            );
             self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
             is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
             let (_, rx) = mpsc::channel(1);
@@ -480,7 +488,7 @@ impl TorrentTask {
                     };
                     match cmd {
                         TorrentCommand::Remove | TorrentCommand::Shutdown => {
-                            info!("Stopping torrent task ({:?}): {}", cmd, info_hash_sha1);
+                            info!(target: "major", "Stopping torrent task ({:?}): {}", cmd, info_hash_sha1);
                             is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                             re_announce_handle.abort();
                             worker_set.shutdown().await;
@@ -502,7 +510,7 @@ impl TorrentTask {
                             break;
                         }
                         TorrentCommand::Pause => {
-                            info!("Pausing torrent: {}", info_hash_sha1);
+                            info!(target: "major", "Torrent paused: {}", info_hash_sha1);
                             is_paused = true;
                             has_download_slot = false;
                             is_stalled = false;
@@ -559,7 +567,7 @@ impl TorrentTask {
                             let _ = TorrentState::save_state(state.clone()).await;
                         }
                         TorrentCommand::Resume => {
-                            info!("Resuming torrent: {}", info_hash_sha1);
+                            info!(target: "major", "Torrent resumed: {}", info_hash_sha1);
                             is_paused = false;
                             is_stalled = false;
                             zero_speed_since = None;
@@ -651,7 +659,7 @@ impl TorrentTask {
                             }
                         }
                         TorrentCommand::Recheck => {
-                            info!("Force recheck initiated for: {}", info_hash_sha1);
+                            info!(target: "major", "Force recheck initiated for: {}", info_hash_sha1);
                             worker_set.shutdown().await;
                             piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
@@ -1009,7 +1017,11 @@ impl TorrentTask {
                         self.stats_registry.set_initial_progress(&info_hash_sha1, total_pieces, total_torrent_size);
                         let current_status = self.stats_registry.snapshot_torrent(&info_hash_sha1).and_then(|s| s.custom_status);
                         if current_status.as_deref() != Some("seeding") {
-                            info!("All pieces complete — torrent is seeding");
+                            info!(
+                                target: "major",
+                                "Torrent download complete — now seeding ({})",
+                                info_hash_sha1
+                            );
                             self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
                         }
                     }

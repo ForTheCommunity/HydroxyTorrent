@@ -643,11 +643,17 @@ pub async fn remove_torrent(
     }
 
     // Unregister from stats and control registry
+    let removed_name = torrent_snap
+        .as_ref()
+        .map(|s| s.name.as_str())
+        .unwrap_or("Unknown");
     state.stats.unregister_torrent(&info_hash);
     state.torrent_controls.unregister(&info_hash);
 
     tracing::info!(
-        "Torrent {} removed successfully (delete_files: {})",
+        target: "major",
+        "Torrent removed: '{}' ({}) [delete_files: {}]",
+        removed_name,
         info_hash,
         delete_files
     );
@@ -697,6 +703,12 @@ fn snapshot_to_api_item(snap: TorrentStatsSnapshot) -> TorrentApiItem {
     }
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct MinorLogsQuery {
+    #[serde(default)]
+    pub sub_id: String,
+}
+
 pub async fn get_logs() -> Result<Json<serde_json::Value>, StatusCode> {
     let log_path = match HydroxyConfig::log_file_path() {
         Ok(p) => p,
@@ -717,6 +729,24 @@ pub async fn get_logs() -> Result<Json<serde_json::Value>, StatusCode> {
             "logs": format!("Error reading log file: {}", e)
         }))),
     }
+}
+
+pub async fn get_minor_logs(
+    axum::extract::Query(query): axum::extract::Query<MinorLogsQuery>,
+) -> Json<serde_json::Value> {
+    let lines = crate::log_broadcast::poll_minor_logs(&query.sub_id);
+    Json(serde_json::json!({
+        "logs": lines
+    }))
+}
+
+pub async fn unsubscribe_minor_logs(
+    axum::extract::Query(query): axum::extract::Query<MinorLogsQuery>,
+) -> Json<serde_json::Value> {
+    crate::log_broadcast::unsubscribe_minor_logs(&query.sub_id);
+    Json(serde_json::json!({
+        "status": "ok"
+    }))
 }
 
 pub async fn read_log_tail(

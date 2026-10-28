@@ -26,7 +26,7 @@ impl Manager {
         queue_manager: Arc<DownloadQueueManager>,
         listen_port: u16,
     ) -> Result<()> {
-        info!("Hydroxy Engine Started...");
+        info!(target: "major", "Hydroxy Engine Started...");
 
         let active_torrents = Arc::new(Mutex::new(HashSet::<[u8; 20]>::new()));
         // Cache (modified_time, info_hash) by path so unchanged .torrent files already
@@ -130,9 +130,11 @@ impl Manager {
 
                     let info_hash_sha1 = hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash);
                     info!(
-                        "New torrent detected in watch dir: '{}' ({})",
+                        target: "major",
+                        "Torrent found in watch dir: '{}' ({}) [category: '{}']",
                         torrent_info.info.name,
-                        info_hash_sha1
+                        info_hash_sha1,
+                        if torrent_dir.dir_name.is_empty() { "default" } else { &torrent_dir.dir_name }
                     );
 
                     let category = torrent_dir.dir_name.clone();
@@ -153,7 +155,7 @@ impl Manager {
                     tokio::spawn(async move {
                         let res = torrent_task.start(torrent_info).await;
                         if let Err(e) = res {
-                            warn!("Torrent task failed: {}", e);
+                            warn!(target: "major", "Torrent task failed: {}", e);
                         }
                         active_torrents_ref.lock().await.remove(&info_hash);
                     });

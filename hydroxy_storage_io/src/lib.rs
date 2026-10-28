@@ -159,10 +159,6 @@ impl TorrentDirData {
             }
         }
 
-        info!(
-            "Dir Reflection Done. Total categories/folders scanned: {}",
-            torrents_dir_data.len()
-        );
         Ok(torrents_dir_data)
     }
 

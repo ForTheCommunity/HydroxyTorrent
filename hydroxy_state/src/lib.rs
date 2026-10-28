@@ -115,14 +115,13 @@ impl TorrentState {
         info_hash_v1: &str,
         torrent_info: &TorrentInfo,
     ) -> Result<Self, StateError> {
-        info!("Loading State...");
         let state_dir = HydroxyConfig::state_dir()?;
         let file_name = format!("{}.hot_state", info_hash_v1);
 
         let file_path = state_dir.join(file_name);
 
         if !file_path.exists() {
-            info!("Creating State for : {}", &torrent_info.info.name);
+            info!(target: "major", "Torrent added (created state): '{}' ({})", &torrent_info.info.name, info_hash_v1);
 
             let total_pieces = torrent_info.info.pieces.len() / 20;
             let bitfield_len = (total_pieces + 7) / 8;
@@ -179,7 +178,6 @@ impl TorrentState {
     }
 
     pub fn decode_state(file_bytes: Vec<u8>) -> Result<Self, StateError> {
-        info!("Decoding State...");
         let decoded_file = decode(&file_bytes)?;
 
         let d = match decoded_file {

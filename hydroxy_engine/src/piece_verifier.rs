@@ -88,6 +88,7 @@ pub async fn verify_torrent_data_on_disk(
     };
 
     info!(
+        target: "major",
         "Recheck complete: {}/{} pieces valid on disk ({:.1}%, {} bytes)",
         completed_pieces, total_pieces, progress, completed_bytes
     );
