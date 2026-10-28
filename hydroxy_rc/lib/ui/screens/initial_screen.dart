@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
+import 'package:hydroxy_rc/session/session_storage.dart';
 import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/routes/routes_name.dart';
 import 'package:hydroxy_rc/ui/screens/web/auth_screen.dart';
@@ -23,7 +24,48 @@ class _InitialScreenState extends State<InitialScreen> {
 
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _isCheckingSession = true;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _isCheckingSession = widget.statusMessage == null && !kIsWasm && !kIsWeb;
+    if (_isCheckingSession) {
+      _checkExistingSession();
+    }
+  }
+
+  Future<void> _checkExistingSession() async {
+    try {
+      final session = await SessionStorage.loadSession();
+      if (session != null && session.authToken.isNotEmpty) {
+        ApiClient.instance.restoreSession(
+          serverHostUrl: session.serverHostUrl,
+          authToken: session.authToken,
+          username: session.username,
+        );
+
+        final isValid = await ApiClient.instance.checkAuthStatus();
+        if (!mounted) return;
+        if (isValid) {
+          Navigator.pushReplacementNamed(context, RoutesName.mainScreen);
+          return;
+        } else {
+          // Token expired or invalid
+          await SessionStorage.clearSession();
+          _ipController.text = session.serverHostUrl;
+          _usernameController.text = session.username;
+        }
+      }
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _isCheckingSession = false;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -55,6 +97,14 @@ class _InitialScreenState extends State<InitialScreen> {
       if (!mounted) return;
 
       if (success) {
+        final token = ApiClient.instance.authToken;
+        if (token != null && token.isNotEmpty) {
+          await SessionStorage.saveSession(SavedSession(
+            serverHostUrl: host,
+            authToken: token,
+            username: username,
+          ));
+        }
         Navigator.pushReplacementNamed(context, RoutesName.mainScreen);
       } else {
         setState(() {
@@ -77,6 +127,18 @@ class _InitialScreenState extends State<InitialScreen> {
   Widget build(BuildContext context) {
     if (kIsWasm || kIsWeb) {
       return AuthScreen(statusMessage: widget.statusMessage);
+    }
+
+    if (_isCheckingSession) {
+      final theme = Theme.of(context);
+      return Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(theme.colorScheme.primary),
+          ),
+        ),
+      );
     }
 
     return Scaffold(

@@ -23,6 +23,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _isCheckingSession = true;
   String? _errorMessage;
 
   @override
@@ -30,6 +31,26 @@ class _AuthScreenState extends State<AuthScreen> {
     super.initState();
     _usernameController = TextEditingController();
     _passwordController = TextEditingController();
+    _isCheckingSession = widget.statusMessage == null;
+    if (_isCheckingSession) {
+      _checkExistingSession();
+    }
+  }
+
+  Future<void> _checkExistingSession() async {
+    try {
+      final isAuthenticated = await ApiClient.instance.checkAuthStatus();
+      if (!mounted) return;
+      if (isAuthenticated) {
+        Navigator.pushReplacementNamed(context, RoutesName.mainScreen);
+        return;
+      }
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _isCheckingSession = false;
+      });
+    }
   }
 
   @override
@@ -91,6 +112,17 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.appColors;
+
+    if (_isCheckingSession) {
+      return Scaffold(
+        backgroundColor: colors.scaffoldBackgroundColor,
+        body: Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(colors.accentGreenColor),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: colors.scaffoldBackgroundColor,

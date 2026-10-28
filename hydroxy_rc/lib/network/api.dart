@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:hydroxy_rc/session//session_storage.dart';
 import 'package:hydroxy_rc/configs/web_provider.dart';
 import 'package:hydroxy_rc/network/models.dart';
 
@@ -56,6 +57,7 @@ class ApiClient {
 
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
+        options.extra['withCredentials'] = true;
         if (_authToken != null && _authToken!.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer $_authToken';
           options.headers['X-Hydroxy-Token'] = _authToken;
@@ -108,6 +110,16 @@ class ApiClient {
     }
     _baseUrl = trimmed;
     dio.options.baseUrl = _baseUrl;
+  }
+
+  void restoreSession({
+    required String serverHostUrl,
+    required String authToken,
+    required String username,
+  }) {
+    setBaseUrl(serverHostUrl);
+    _authToken = authToken;
+    _username = username;
   }
 
   Future<bool> login({
@@ -163,6 +175,7 @@ class ApiClient {
       _authToken = null;
       _username = null;
       resetConnectionState();
+      await SessionStorage.clearSession();
     }
   }
 
@@ -170,9 +183,21 @@ class ApiClient {
     try {
       final response = await dio.get(
         '$_baseUrl/api/auth/status',
-        options: Options(validateStatus: (status) => status != null && status < 500),
+        options: Options(
+          validateStatus: (status) => status != null && status < 500,
+          extra: {'withCredentials': true},
+        ),
       );
-      return response.statusCode == 200;
+      if (response.statusCode == 200 && response.data is Map<String, dynamic>) {
+        final data = response.data as Map<String, dynamic>;
+        final token = data['token']?.toString();
+        if (token != null && token.isNotEmpty) {
+          _authToken = token;
+        }
+        _username = data['username']?.toString() ?? _username;
+        return true;
+      }
+      return false;
     } catch (_) {
       return false;
     }

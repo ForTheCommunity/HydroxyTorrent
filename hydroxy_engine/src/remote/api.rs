@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::VecDeque,
     sync::{Arc, RwLock},
 };
 
@@ -19,10 +19,12 @@ use crate::{
     stats::{stats::TorrentStatsSnapshot, stats_registry::StatsRegistry},
 };
 
+pub const MAX_ACTIVE_SESSIONS: usize = 5;
+
 pub struct ServerState {
     pub stats: Arc<StatsRegistry>,
     pub remote_config: RemoteConfig,
-    pub active_sessions: RwLock<HashSet<String>>,
+    pub active_sessions: RwLock<VecDeque<String>>,
     pub torrent_controls: Arc<TorrentControlRegistry>,
 }
 
@@ -35,9 +37,17 @@ impl ServerState {
         Self {
             stats,
             remote_config,
-            active_sessions: RwLock::new(HashSet::new()),
+            active_sessions: RwLock::new(VecDeque::new()),
             torrent_controls,
         }
+    }
+
+    pub fn add_session(&self, token: impl Into<String>) {
+        let mut sessions = self.active_sessions.write().unwrap();
+        while sessions.len() >= MAX_ACTIVE_SESSIONS {
+            sessions.pop_front();
+        }
+        sessions.push_back(token.into());
     }
 }
 
@@ -58,7 +68,10 @@ pub async fn login_handler(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<LoginPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    if !state.remote_config.verify_credentials(&payload.username, &payload.password) {
+    if !state
+        .remote_config
+        .verify_credentials(&payload.username, &payload.password)
+    {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "Invalid username or password" })),
@@ -66,24 +79,15 @@ pub async fn login_handler(
     }
 
     let token = hydroxy_config::auth::generate_session_token();
-    {
-        const MAX_ACTIVE_SESSIONS: usize = 256;
-        let mut sessions = state.active_sessions.write().unwrap();
-        if sessions.len() >= MAX_ACTIVE_SESSIONS {
-            if let Some(oldest) = sessions.iter().next().cloned() {
-                sessions.remove(&oldest);
-            }
-        }
-        sessions.insert(token.clone());
-    }
+    state.add_session(token.clone());
 
-    let cookie_val = format!("hydroxy_session={}; Path=/; SameSite=Lax; HttpOnly", token);
+    let cookie_val = format!(
+        "hydroxy_session={}; Path=/; Max-Age=2592000; SameSite=Lax; HttpOnly",
+        token
+    );
 
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::SET_COOKIE,
-        cookie_val.parse().unwrap(),
-    );
+    headers.insert(axum::http::header::SET_COOKIE, cookie_val.parse().unwrap());
     headers.insert(
         axum::http::header::CACHE_CONTROL,
         "no-store".parse().unwrap(),
@@ -104,13 +108,15 @@ pub async fn logout_handler(
 ) -> impl IntoResponse {
     if let Some(token) = extract_token(&req) {
         let mut sessions = state.active_sessions.write().unwrap();
-        sessions.remove(&token);
+        sessions.retain(|s| s != &token);
     }
 
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         axum::http::header::SET_COOKIE,
-        "hydroxy_session=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly".parse().unwrap(),
+        "hydroxy_session=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly"
+            .parse()
+            .unwrap(),
     );
 
     (
@@ -124,10 +130,13 @@ pub async fn logout_handler(
 
 pub async fn auth_status_handler(
     State(state): State<Arc<ServerState>>,
+    req: Request,
 ) -> impl IntoResponse {
+    let token = extract_token(&req).unwrap_or_default();
     Json(serde_json::json!({
         "authenticated": true,
-        "username": state.remote_config.username
+        "username": state.remote_config.username,
+        "token": token
     }))
 }
 
@@ -135,7 +144,10 @@ pub fn extract_token(req: &Request) -> Option<String> {
     let headers = req.headers();
 
     // Authorization: Bearer <token>
-    if let Some(auth_val) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
         if let Some(token) = auth_val.strip_prefix("Bearer ") {
             return Some(token.trim().to_string());
         }
@@ -147,7 +159,10 @@ pub fn extract_token(req: &Request) -> Option<String> {
     }
 
     // Cookie: hydroxy_session=<token>
-    if let Some(cookie_val) = headers.get(axum::http::header::COOKIE).and_then(|h| h.to_str().ok()) {
+    if let Some(cookie_val) = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|h| h.to_str().ok())
+    {
         for cookie in cookie_val.split(';') {
             let cookie = cookie.trim();
             if let Some(token) = cookie.strip_prefix("hydroxy_session=") {
@@ -168,10 +183,16 @@ pub fn is_authenticated(state: &ServerState, req: &Request) -> bool {
     }
 
     // Check HTTP Basic Auth (Authorization: Basic <base64>)
-    if let Some(auth_val) = req.headers().get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+    if let Some(auth_val) = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
         if let Some(basic_b64) = auth_val.strip_prefix("Basic ") {
             use base64::Engine;
-            if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(basic_b64.trim()) {
+            if let Ok(decoded_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(basic_b64.trim())
+            {
                 if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
                     if let Some((user, pass)) = decoded_str.split_once(':') {
                         if state.remote_config.verify_credentials(user, pass) {
@@ -272,7 +293,9 @@ pub async fn pause_torrent(
         .send_command(&info_hash, TorrentCommand::Pause)
         .await
     {
-        state.stats.set_status(&info_hash, Some("paused".to_string()));
+        state
+            .stats
+            .set_status(&info_hash, Some("paused".to_string()));
         Ok(Json(serde_json::json!({
             "status": "ok",
             "message": format!("Torrent {} paused", info_hash)
@@ -349,7 +372,10 @@ pub async fn set_sequential_download(
 ) -> Result<impl IntoResponse, StatusCode> {
     if state
         .torrent_controls
-        .send_command(&info_hash, TorrentCommand::SetSequential(payload.sequential))
+        .send_command(
+            &info_hash,
+            TorrentCommand::SetSequential(payload.sequential),
+        )
         .await
     {
         state.stats.set_sequential(&info_hash, payload.sequential);
@@ -519,10 +545,7 @@ pub async fn remove_torrent(
                 .as_ref()
                 .map(|s| s.category.as_str())
                 .unwrap_or("");
-            let name = torrent_snap
-                .as_ref()
-                .map(|s| s.name.as_str())
-                .unwrap_or("");
+            let name = torrent_snap.as_ref().map(|s| s.name.as_str()).unwrap_or("");
             remove_downloaded_content(&download_dir, category, name, &file_paths).await;
 
             let fallback_dl = std::path::PathBuf::from("downloads");
@@ -637,9 +660,7 @@ pub async fn read_log_tail(
     Ok(lines[start..].join("\n"))
 }
 
-pub async fn shutdown_daemon(
-    State(state): State<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn shutdown_daemon(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     let controls = Arc::clone(&state.torrent_controls);
     tokio::spawn(async move {
         controls.broadcast_command(TorrentCommand::Shutdown).await;
@@ -745,7 +766,7 @@ mod tests {
     fn test_bearer_token_authentication() {
         let state = create_test_state();
         let token = "valid_test_token_12345";
-        state.active_sessions.write().unwrap().insert(token.to_string());
+        state.add_session(token);
 
         let req = Request::builder()
             .uri("/api/torrents")
@@ -769,15 +790,81 @@ mod tests {
     fn test_cookie_authentication() {
         let state = create_test_state();
         let token = "cookie_token_abc";
-        state.active_sessions.write().unwrap().insert(token.to_string());
+        state.add_session(token);
 
         let req = Request::builder()
             .uri("/api/torrents")
-            .header("Cookie", format!("other=123; hydroxy_session={}; test=1", token))
+            .header(
+                "Cookie",
+                format!("other=123; hydroxy_session={}; test=1", token),
+            )
             .body(axum::body::Body::empty())
             .unwrap();
 
         assert!(is_authenticated(&state, &req));
+    }
+
+    #[tokio::test]
+    async fn test_max_active_sessions_cap_of_five() {
+        let state = Arc::new(create_test_state());
+
+        let mut tokens = Vec::new();
+        for _ in 1..=6 {
+            let payload = LoginPayload {
+                username: "admin".into(),
+                password: "secret123".into(),
+            };
+            let resp = login_handler(axum::extract::State(state.clone()), Json(payload))
+                .await
+                .expect("Login failed")
+                .into_response();
+
+            let set_cookie = resp
+                .headers()
+                .get(axum::http::header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(set_cookie.contains("Max-Age=2592000"));
+
+            let token = state
+                .active_sessions
+                .read()
+                .unwrap()
+                .back()
+                .cloned()
+                .unwrap();
+            tokens.push(token);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        // Only at most 5 sessions should be active
+        assert_eq!(state.active_sessions.read().unwrap().len(), 5);
+
+        // First session must be evicted
+        let req_first = Request::builder()
+            .uri("/api/torrents")
+            .header("Authorization", format!("Bearer {}", tokens[0]))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(
+            !is_authenticated(&state, &req_first),
+            "First session should have been evicted"
+        );
+
+        // The remaining 5 sessions (tokens 1..=5) should be valid
+        for (i, token) in tokens[1..].iter().enumerate() {
+            let req = Request::builder()
+                .uri("/api/torrents")
+                .header("Authorization", format!("Bearer {}", token))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                is_authenticated(&state, &req),
+                "Session {} should be active",
+                i + 2
+            );
+        }
     }
 
     #[test]
@@ -805,12 +892,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_state_file() {
-        let temp_dir = std::env::temp_dir().join(format!("hydroxy_test_state_{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "hydroxy_test_state_{}",
+            std::time::SystemTime::now().elapsed().unwrap().as_nanos()
+        ));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
         let info_hash = "0123456789abcdef0123456789abcdef01234567";
         let state_file = temp_dir.join(format!("{}.hot_state", info_hash));
-        tokio::fs::write(&state_file, b"test state data").await.unwrap();
+        tokio::fs::write(&state_file, b"test state data")
+            .await
+            .unwrap();
         assert!(state_file.exists());
 
         remove_state_file(&temp_dir, info_hash).await;
@@ -821,7 +913,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_dottorrent_from_dir_by_name() {
-        let temp_dir = std::env::temp_dir().join(format!("hydroxy_test_watch_{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "hydroxy_test_watch_{}",
+            std::time::SystemTime::now().elapsed().unwrap().as_nanos()
+        ));
         let sub_dir = temp_dir.join("anime").join("movies");
         tokio::fs::create_dir_all(&sub_dir).await.unwrap();
 
@@ -829,8 +924,12 @@ mod tests {
         let matching_torrent = sub_dir.join(format!("{}.torrent", info_hash));
         let non_matching_torrent = sub_dir.join("other.torrent");
 
-        tokio::fs::write(&matching_torrent, b"dummy content").await.unwrap();
-        tokio::fs::write(&non_matching_torrent, b"other content").await.unwrap();
+        tokio::fs::write(&matching_torrent, b"dummy content")
+            .await
+            .unwrap();
+        tokio::fs::write(&non_matching_torrent, b"other content")
+            .await
+            .unwrap();
 
         assert!(matching_torrent.exists());
         assert!(non_matching_torrent.exists());
@@ -845,7 +944,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_downloaded_content() {
-        let temp_dir = std::env::temp_dir().join(format!("hydroxy_test_dl_{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "hydroxy_test_dl_{}",
+            std::time::SystemTime::now().elapsed().unwrap().as_nanos()
+        ));
         let category_dir = temp_dir.join("category_a");
         let torrent_folder = category_dir.join("MyTorrentFolder");
         tokio::fs::create_dir_all(&torrent_folder).await.unwrap();
@@ -860,7 +962,8 @@ mod tests {
             "category_a",
             "MyTorrentFolder",
             &[file1.to_string_lossy().to_string()],
-        ).await;
+        )
+        .await;
 
         assert!(!torrent_folder.exists());
         assert!(!file1.exists());
@@ -892,8 +995,11 @@ mod tests {
         let response = remove_torrent(
             Path(info_hash.clone()),
             State(state.clone()),
-            Some(Json(RemoveTorrentPayload { delete_files: false })),
-        ).await;
+            Some(Json(RemoveTorrentPayload {
+                delete_files: false,
+            })),
+        )
+        .await;
 
         assert!(response.is_ok());
 
@@ -918,7 +1024,9 @@ mod tests {
         for i in 1..=1000 {
             content.push_str(&format!("2026-10-27 INFO line number {}\n", i));
         }
-        tokio::fs::write(&temp_file, content.as_bytes()).await.unwrap();
+        tokio::fs::write(&temp_file, content.as_bytes())
+            .await
+            .unwrap();
 
         // Read only last 4 KB and at most 50 lines
         let tail = read_log_tail(&temp_file, 4096, 50).await.unwrap();
