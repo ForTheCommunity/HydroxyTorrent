@@ -706,6 +706,14 @@ impl PeerWorker {
 
             PeerMessage::Extended { id, payload } => {
                 if id == pex::EXTENSION_HANDSHAKE_ID {
+                    if let Some(client_ver) = pex::parse_remote_client_version(&payload) {
+                        self.stats_registry.update_peer_client(
+                            info_hash_sha1,
+                            self.ip_addr,
+                            self.port,
+                            client_ver,
+                        );
+                    }
                     if let Some(remote_id) = pex::parse_remote_ut_pex_id(&payload) {
                         info!(
                             "PEX: Negotiated ut_pex with {}:{} (remote extended ID: {})",

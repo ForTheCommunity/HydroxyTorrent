@@ -62,6 +62,15 @@ impl StatsRegistry {
         }
     }
 
+    /// Called when BEP 10 extended handshake advertises explicit client name/version ("v" key).
+    pub fn update_peer_client(&self, info_hash: &str, ip: IpAddr, port: u16, client_id: String) {
+        if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
+            if let Some(peer) = torrent.peers_stats.get_mut(&(ip, port)) {
+                peer.client_id = client_id;
+            }
+        }
+    }
+
     // called by PeerWorker on every received block.
     pub fn record_download(&self, info_hash: &str, ip_addr: IpAddr, port: u16, bytes: u64) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {

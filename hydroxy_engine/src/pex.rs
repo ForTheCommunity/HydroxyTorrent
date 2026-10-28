@@ -46,6 +46,23 @@ pub fn parse_remote_ut_pex_id(payload: &[u8]) -> Option<u8> {
     None
 }
 
+/// Parse the remote peer's client version string from BEP 10 Extended Handshake (`v` key).
+pub fn parse_remote_client_version(payload: &[u8]) -> Option<String> {
+    let value = decode(payload).ok()?;
+    if let BencodedValue::Dictionary(dict) = value {
+        let bdict = BDict::new(&dict);
+        if let Some(v_bytes) = bdict.get_string(b"v") {
+            if let Ok(v_str) = std::str::from_utf8(&v_bytes) {
+                let trimmed = v_str.trim();
+                if !trimmed.is_empty() && trimmed.chars().all(|c| !c.is_control()) {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Build a BEP 11 Peer Exchange (PEX) message payload.
 /// Compact 6-byte IPv4 addresses (4 bytes IP + 2 bytes port).
 pub fn build_pex_message(
