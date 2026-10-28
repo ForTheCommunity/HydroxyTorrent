@@ -8,22 +8,6 @@ listen_address = "0.0.0.0"
 listen_port = 9999
 
 
-# Session limits: active transfers, bandwidth speed limits, peer connections
-[session_config]
-# Maximum concurrent active downloads (0 = unlimited, default 15)
-max_active_downloads = 15
-# Maximum concurrent active uploads / seeding torrents (0 = unlimited, default 5)
-max_active_uploads = 5
-# Global download rate limit in KB/s (0 = unlimited)
-max_download_speed_kbps = 0
-# Global upload rate limit in KB/s (0 = unlimited)
-max_upload_speed_kbps = 0
-# Maximum peer connections per torrent swarm (default 50)
-max_peers_per_torrent = 50
-# Maximum total peer connections across all swarms (default 300)
-max_total_peers = 300
-
-
 # watch directory will reflected like this in download_directory...
 # <Watch Directory>/Ubuntu/ubuntu_24.iso.torrent => <Download Directory>/Ubuntu/ubuntu_24.iso
 # <Watch Directory>/Ubuntu/ubuntu_23.iso.torrent => <Download Directory>/Ubuntu/ubuntu_23.iso
@@ -64,3 +48,19 @@ listen_port = 10000
 username = ""
 # password
 password = ""
+
+
+# Limitations: active transfers, bandwidth speed limits, peer connections
+[Limitations]
+# Maximum concurrent active downloads (0 = unlimited, default 15)
+max_active_downloads = 15
+# Maximum concurrent active uploads / seeding torrents (0 = unlimited, default 5)
+max_active_uploads = 5
+# Global download rate limit in KB/s (0 = unlimited)
+max_download_speed_kbps = 0
+# Global upload rate limit in KB/s (0 = unlimited)
+max_upload_speed_kbps = 0
+# Maximum peer connections per torrent swarm (default 50)
+max_peers_per_torrent = 50
+# Maximum total peer connections across all swarms (default 300)
+max_total_peers = 300

@@ -19,7 +19,7 @@ pub struct GeneratedCredentials {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HydroxyConfig {
     pub network_config: NetworkConfig,
-    #[serde(default)]
+    #[serde(default, alias = "Limitations", alias = "limitations")]
     pub session_config: SessionConfig,
     pub storage_config: StorageConfig,
     pub remote_config: RemoteConfig,
@@ -356,5 +356,33 @@ password = "hashed_password"
         assert_eq!(config.session_config.max_peers_per_torrent, 60);
         assert_eq!(config.session_config.max_total_peers, 400);
         assert_eq!(config.effective_max_active_downloads(), 25);
+    }
+
+    #[test]
+    fn test_deserialize_limitations_section() {
+        let toml_str = r#"
+[network_config]
+listen_address = "0.0.0.0"
+listen_port = 9999
+
+[Limitations]
+max_active_downloads = 15
+
+[storage_config]
+watch_directory = "/tmp/watch"
+download_directory = "/tmp/downloads"
+
+[remote_config]
+rpc_enabled = true
+web_ui_enabled = false
+listen_address = "127.0.0.1"
+listen_port = 10000
+username = "admin"
+password = "hashed_password"
+"#;
+        let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize limitations config");
+        assert_eq!(config.session_config.max_active_downloads, 15);
+        assert_eq!(config.effective_max_active_downloads(), 15);
+        assert_eq!(config.session_config.max_active_uploads, 5);
     }
 }

@@ -50,11 +50,9 @@ impl DownloadQueueManager {
         inner.waiting.retain(|h| h != &info_hash);
         inner.notifiers.remove(&info_hash);
 
-        let max_total = if inner.max_active == 0 { 0 } else { (inner.max_active * 2).max(10) };
         let under_active_limit = inner.max_active == 0 || inner.active.len() < inner.max_active;
-        let under_total_limit = max_total == 0 || (inner.active.len() + inner.stalled.len()) < max_total;
 
-        if under_active_limit && under_total_limit {
+        if under_active_limit {
             inner.active.insert(info_hash);
             let (_, rx) = mpsc::channel(1);
             info!(
@@ -134,9 +132,7 @@ impl DownloadQueueManager {
     }
 
     async fn promote_waiting(inner: &mut QueueInner) {
-        let max_total = if inner.max_active == 0 { 0 } else { (inner.max_active * 2).max(10) };
         while (inner.max_active == 0 || inner.active.len() < inner.max_active)
-            && (max_total == 0 || (inner.active.len() + inner.stalled.len()) < max_total)
             && !inner.waiting.is_empty()
         {
             if let Some(next_hash) = inner.waiting.pop_front() {
@@ -287,6 +283,55 @@ mod tests {
 
         let inner = q.inner.lock().await;
         assert_eq!(inner.active.len(), 10);
+        assert_eq!(inner.waiting.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stalled_torrents_do_not_block_active_download_quota() {
+        let max_active = 2;
+        let q = DownloadQueueManager::new(max_active);
+
+        // Fill active slots and mark them stalled repeatedly to simulate 20 stalled torrents
+        for i in 0..20 {
+            let mut hash = [0u8; 20];
+            hash[0] = (i + 1) as u8;
+            let (active, _rx) = q.acquire_download_slot(hash).await;
+            assert!(active);
+            q.mark_stalled(&hash).await;
+        }
+
+        {
+            let inner = q.inner.lock().await;
+            assert_eq!(inner.stalled.len(), 20);
+            assert_eq!(inner.active.len(), 0);
+        }
+
+        // Now queue two more torrents. They should both acquire active slots immediately
+        let hash_a = [100u8; 20];
+        let hash_b = [101u8; 20];
+        let hash_c = [102u8; 20];
+
+        let (active_a, _rx_a) = q.acquire_download_slot(hash_a).await;
+        let (active_b, _rx_b) = q.acquire_download_slot(hash_b).await;
+        let (active_c, mut rx_c) = q.acquire_download_slot(hash_c).await;
+
+        assert!(active_a, "Torrent A should be active");
+        assert!(active_b, "Torrent B should be active");
+        assert!(!active_c, "Torrent C should be queued since active == 2");
+
+        // Release Torrent A; Torrent C must be promoted despite 20 stalled torrents
+        q.release_download_slot(&hash_a).await;
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), rx_c.recv())
+            .await
+            .expect("timeout waiting for promotion")
+            .expect("channel closed");
+
+        let inner = q.inner.lock().await;
+        assert_eq!(inner.active.len(), 2);
+        assert!(inner.active.contains(&hash_b));
+        assert!(inner.active.contains(&hash_c));
+        assert_eq!(inner.stalled.len(), 20);
         assert_eq!(inner.waiting.len(), 0);
     }
 }
