@@ -52,12 +52,18 @@ pub async fn verify_torrent_data_on_disk(
             let start = piece_idx * 20;
             let end = start + 20;
             if end <= piece_hashes.len() {
-                let expected_hash = &piece_hashes[start..end];
-                let mut hasher = Sha1::new();
-                hasher.update(&piece_data);
-                let actual_hash = hasher.finalize();
+                let mut expected_hash = [0u8; 20];
+                expected_hash.copy_from_slice(&piece_hashes[start..end]);
+                let is_valid = tokio::task::spawn_blocking(move || {
+                    let mut hasher = Sha1::new();
+                    hasher.update(&piece_data);
+                    let actual_hash = hasher.finalize();
+                    actual_hash.as_slice() == expected_hash
+                })
+                .await
+                .unwrap_or(false);
 
-                if actual_hash.as_slice() == expected_hash {
+                if is_valid {
                     let byte_idx = piece_idx / 8;
                     let bit_idx = 7 - (piece_idx % 8);
                     bitfield[byte_idx] |= 1 << bit_idx;

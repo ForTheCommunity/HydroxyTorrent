@@ -314,7 +314,7 @@ fn main() {
         .init();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .max_blocking_threads(32)
+        .max_blocking_threads(24)
         .thread_keep_alive(std::time::Duration::from_secs(10))
         .enable_all()
         .build()
@@ -367,24 +367,41 @@ async fn run_daemon() {
     if config.remote_config.rpc_enabled {
         let server_stats = Arc::clone(&stats_registry);
         let server_controls = Arc::clone(&control_registry);
-        // Spawn RPC Server
-        tokio::spawn(async move {
-            let addr = config.remote_config.listen_address;
-            let port = config.remote_config.listen_port;
+        let remote_cfg = config.remote_config.clone();
+        // Run RPC / Web-UI Server on a dedicated isolated OS thread + current_thread runtime
+        // so heavy peer traffic or piece hashing on the engine runtime can never delay RPC responses.
+        if let Err(e) = std::thread::Builder::new()
+            .name("hydroxy-rpc".into())
+            .spawn(move || {
+                let rpc_rt = tokio::runtime::Builder::new_current_thread()
+                    .max_blocking_threads(4)
+                    .thread_keep_alive(std::time::Duration::from_secs(10))
+                    .enable_all()
+                    .build()
+                    .expect("Failed to initialize RPC Tokio runtime");
 
-            if let Err(e) = start_server(
-                &addr,
-                &port,
-                config.remote_config.clone(),
-                server_stats,
-                server_controls,
-            )
-            .await
-            {
-                error!(target: "major", "RPC server error: {}", e);
-                std::process::exit(1);
-            }
-        });
+                rpc_rt.block_on(async move {
+                    let addr = remote_cfg.listen_address;
+                    let port = remote_cfg.listen_port;
+
+                    if let Err(e) = start_server(
+                        &addr,
+                        &port,
+                        remote_cfg,
+                        server_stats,
+                        server_controls,
+                    )
+                    .await
+                    {
+                        error!(target: "major", "RPC server error: {}", e);
+                        std::process::exit(1);
+                    }
+                });
+            })
+        {
+            error!(target: "major", "Failed to spawn RPC server thread: {}", e);
+            std::process::exit(1);
+        }
     } else {
         info!(target: "major", "RPC is disabled. Web UI automatically disabled.");
     }

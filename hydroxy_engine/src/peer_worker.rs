@@ -563,14 +563,22 @@ impl PeerWorker {
                     .piece_assembler
                     .add_block(index, begin, block, actual_len)
                 {
-                    // SHA1 verify
+                    // SHA1 verify on blocking pool so multi-MB hashing never stalls core network threads
                     let hash_start = index as usize * 20;
                     if hash_start + 20 > self.piece_hashes.len() {
                         return Ok(());
                     }
-                    let expected_hash = &self.piece_hashes[hash_start..hash_start + 20];
+                    let mut expected_hash = [0u8; 20];
+                    expected_hash.copy_from_slice(&self.piece_hashes[hash_start..hash_start + 20]);
 
-                    if !PieceAssembler::verify_piece(&assembled, expected_hash) {
+                    let (is_valid, assembled) = tokio::task::spawn_blocking(move || {
+                        let valid = PieceAssembler::verify_piece(&assembled, &expected_hash);
+                        (valid, assembled)
+                    })
+                    .await
+                    .map_err(|e| EngineError::Error(format!("SHA1 task join error: {}", e)))?;
+
+                    if !is_valid {
                         warn!("Piece {} failed SHA1 — releasing back to pool", index);
                         self.set_current_piece(None);
                         self.last_block_time = None;
