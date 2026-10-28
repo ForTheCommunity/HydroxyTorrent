@@ -778,6 +778,7 @@ pub async fn read_log_tail(
 }
 
 pub async fn shutdown_daemon(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    tracing::info!(target: "major", "Daemon shutdown requested via RPC API...");
     let controls = Arc::clone(&state.torrent_controls);
     tokio::spawn(async move {
         controls.broadcast_command(TorrentCommand::Shutdown).await;

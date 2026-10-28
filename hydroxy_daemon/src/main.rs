@@ -174,14 +174,41 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SplitLogMakeWriter {
     }
 }
 
+fn check_already_running(config: &HydroxyConfig) -> Option<String> {
+    if config.remote_config.rpc_enabled {
+        let rpc_addr = (
+            config.remote_config.listen_address,
+            config.remote_config.listen_port,
+        );
+        if std::net::TcpListener::bind(rpc_addr).is_err() {
+            return Some(format!(
+                "Hydroxy Torrent Daemon is already running (RPC port {}:{} is already in use).",
+                config.remote_config.listen_address, config.remote_config.listen_port
+            ));
+        }
+    }
+
+    let peer_addr = (
+        config.network_config.listen_address,
+        config.network_config.listen_port,
+    );
+    if std::net::TcpListener::bind(peer_addr).is_err() {
+        return Some(format!(
+            "Hydroxy Torrent Daemon is already running (Peer port {}:{} is already in use).",
+            config.network_config.listen_address, config.network_config.listen_port
+        ));
+    }
+
+    None
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_foreground = args.iter().any(|a| a == "--foreground" || a == "-f");
     let is_child =
         args.iter().any(|a| a == "--daemon-child") || std::env::var("HYDROXY_DAEMON_CHILD").is_ok();
 
-    if !is_foreground && !is_child {
-        // Parent process: read config to display URL, then fork into background
+    if !is_child {
         let config = match HydroxyConfig::init() {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -190,76 +217,84 @@ fn main() {
             }
         };
 
-        let log_path = match HydroxyConfig::log_file_path() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Failed to determine logs path: {}", e);
-                std::process::exit(1);
-            }
-        };
-
-        println!("Hydroxy Torrent Daemon starting...");
-        if let Ok(cfg_path) = HydroxyConfig::config_file_path() {
-            println!("Config file: {}", cfg_path.display());
-        }
-        println!("Peer Listen Port: {}", config.network_config.listen_port);
-        println!("RPC Port: {}", config.remote_config.listen_port);
-        if config.remote_config.web_ui_enabled {
-            let web_ui_url = format!(
-                "http://{}:{}/",
-                config.remote_config.listen_address, config.remote_config.listen_port
-            );
-            println!("Web UI URL:   {}", web_ui_url);
+        if let Some(msg) = check_already_running(&config) {
+            eprintln!("{}", msg);
+            std::process::exit(1);
         }
 
-        println!("Log file:     {}", log_path.display());
+        if !is_foreground {
+            // Parent process: display URL, then fork into background
+            let log_path = match HydroxyConfig::log_file_path() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Failed to determine logs path: {}", e);
+                    std::process::exit(1);
+                }
+            };
 
-        if let Some(ref creds) = config.newly_generated_credentials {
-            println!("============================================================");
-            println!("🔑 Web UI & RPC Access Credentials Generated:");
-            println!("   Username: {}", creds.username);
-            println!("   Password: {}", creds.password);
-            println!();
-            println!("   The password was auto-hashed and saved securely in:");
+            println!("Hydroxy Torrent Daemon starting...");
             if let Ok(cfg_path) = HydroxyConfig::config_file_path() {
-                println!("   {}", cfg_path.display());
+                println!("Config file: {}", cfg_path.display());
             }
-            println!("============================================================");
-        }
-
-        let exe = match std::env::current_exe() {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("Failed to get executable path: {}", e);
-                std::process::exit(1);
+            println!("Peer Listen Port: {}", config.network_config.listen_port);
+            println!("RPC Port: {}", config.remote_config.listen_port);
+            if config.remote_config.web_ui_enabled {
+                let web_ui_url = format!(
+                    "http://{}:{}/",
+                    config.remote_config.listen_address, config.remote_config.listen_port
+                );
+                println!("Web UI URL:   {}", web_ui_url);
             }
-        };
 
-        if let Some(parent) = log_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+            println!("Log file:     {}", log_path.display());
 
-        let mut cmd = std::process::Command::new(exe);
-        cmd.arg("--daemon-child")
-            .env("HYDROXY_DAEMON_CHILD", "1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        match cmd.spawn() {
-            Ok(child) => {
-                println!("Daemon started in background (PID: {}).", child.id());
-                std::process::exit(0);
+            if let Some(ref creds) = config.newly_generated_credentials {
+                println!("============================================================");
+                println!("🔑 Web UI & RPC Access Credentials Generated:");
+                println!("   Username: {}", creds.username);
+                println!("   Password: {}", creds.password);
+                println!();
+                println!("   The password was auto-hashed and saved securely in:");
+                if let Ok(cfg_path) = HydroxyConfig::config_file_path() {
+                    println!("   {}", cfg_path.display());
+                }
+                println!("============================================================");
             }
-            Err(e) => {
-                eprintln!("Failed to spawn daemon process: {}", e);
-                std::process::exit(1);
+
+            let exe = match std::env::current_exe() {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("Failed to get executable path: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            let mut cmd = std::process::Command::new(exe);
+            cmd.arg("--daemon-child")
+                .env("HYDROXY_DAEMON_CHILD", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                cmd.process_group(0);
+            }
+
+            match cmd.spawn() {
+                Ok(child) => {
+                    println!("Daemon started in background (PID: {}).", child.id());
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("Failed to spawn daemon process: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -347,6 +382,7 @@ async fn run_daemon() {
             .await
             {
                 error!(target: "major", "RPC server error: {}", e);
+                std::process::exit(1);
             }
         });
     } else {
