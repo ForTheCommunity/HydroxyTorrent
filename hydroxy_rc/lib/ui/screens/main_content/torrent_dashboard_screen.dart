@@ -86,14 +86,23 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
     'Info Hash': 320.0,
   };
 
+  late final FocusNode _tableFocusNode;
+
   @override
   void initState() {
     super.initState();
+    _tableFocusNode = FocusNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _tableFocusNode.requestFocus();
+      }
+    });
     context.read<TorrentsBloc>().add(const TorrentsEvent.fetch());
   }
 
   @override
   void dispose() {
+    _tableFocusNode.dispose();
     _horizontalScrollController.dispose();
     _verticalScrollController.dispose();
     _panelContentHeightNotifier.dispose();
@@ -147,6 +156,9 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
     bool isRange = false,
     required List<TorrentStructure> currentList,
   }) {
+    if (!_tableFocusNode.hasFocus) {
+      _tableFocusNode.requestFocus();
+    }
     setState(() {
       if (isToggle) {
         if (_selectedInfoHashes.contains(torrent.infoHash)) {
@@ -224,6 +236,11 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
     );
     final count = results.where((r) => r).length;
     if (mounted) {
+      setState(() {
+        _selectedInfoHashes.clear();
+        _primarySelectedIH = null;
+        _anchorInfoHash = null;
+      });
       context.read<TorrentsBloc>().add(const TorrentsEvent.fetch());
       if (torrents.length > 1) {
         final colors = context.appColors;
@@ -248,6 +265,11 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
     );
     final count = results.where((r) => r).length;
     if (mounted) {
+      setState(() {
+        _selectedInfoHashes.clear();
+        _primarySelectedIH = null;
+        _anchorInfoHash = null;
+      });
       context.read<TorrentsBloc>().add(const TorrentsEvent.fetch());
       if (torrents.length > 1) {
         final colors = context.appColors;
@@ -271,6 +293,11 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
       torrents.map((t) => reannounceTorrent(infoHash: t.infoHash)),
     );
     if (mounted) {
+      setState(() {
+        _selectedInfoHashes.clear();
+        _primarySelectedIH = null;
+        _anchorInfoHash = null;
+      });
       context.read<TorrentsBloc>().add(const TorrentsEvent.fetch());
     }
   }
@@ -375,6 +402,11 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
     final successCount = results.where((r) => r).length;
 
     if (mounted) {
+      setState(() {
+        _selectedInfoHashes.clear();
+        _primarySelectedIH = null;
+        _anchorInfoHash = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -403,6 +435,11 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
       ),
     );
     if (mounted) {
+      setState(() {
+        _selectedInfoHashes.clear();
+        _primarySelectedIH = null;
+        _anchorInfoHash = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -570,30 +607,43 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
     );
 
     if (confirmed == true && mounted) {
-      await Future.wait(
-        torrents.map(
-          (t) => removeTorrent(
-            infoHash: t.infoHash,
-            deleteFiles: deleteDownloadedFiles,
+      final targets = List<TorrentStructure>.from(torrents);
+      try {
+        await Future.wait(
+          targets.map(
+            (t) => removeTorrent(
+              infoHash: t.infoHash,
+              deleteFiles: deleteDownloadedFiles,
+            ),
           ),
-        ),
-      );
+        );
+      } catch (_) {}
 
       if (mounted) {
         setState(() {
-          final removedHashes = torrents.map((t) => t.infoHash).toSet();
-          _selectedInfoHashes.removeWhere((ih) => removedHashes.contains(ih));
-          if (_primarySelectedIH != null && removedHashes.contains(_primarySelectedIH)) {
-            _primarySelectedIH = _selectedInfoHashes.isNotEmpty
-                ? _selectedInfoHashes.last
-                : null;
-          }
-          if (_anchorInfoHash != null && removedHashes.contains(_anchorInfoHash)) {
-            _anchorInfoHash = null;
-          }
+          _selectedInfoHashes.clear();
+          _primarySelectedIH = null;
+          _anchorInfoHash = null;
         });
 
         context.read<TorrentsBloc>().add(const TorrentsEvent.fetch());
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              targets.length == 1
+                  ? 'Removed "${targets.first.name}"'
+                  : 'Removed ${targets.length} torrents',
+              style: TextStyle(
+                color: colors.snackBarTextColor,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            duration: const Duration(seconds: 2),
+            backgroundColor: colors.snackBarBackgroundColor,
+          ),
+        );
       }
     }
   }
@@ -1030,42 +1080,57 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
                         top: 2.0,
                         bottom: currentPanelTotalHeight,
                       ),
-                      child: CallbackShortcuts(
-                        bindings: <ShortcutActivator, VoidCallback>{
-                          const SingleActivator(LogicalKeyboardKey.delete): () {
-                            if (selectedTorrents.isNotEmpty) {
-                              _removeTorrents(selectedTorrents);
+                      child: Focus(
+                        focusNode: _tableFocusNode,
+                        autofocus: true,
+                        onKeyEvent: (node, event) {
+                          if (event is KeyDownEvent) {
+                            final isCtrlOrMeta = HardwareKeyboard.instance.isControlPressed ||
+                                HardwareKeyboard.instance.isMetaPressed;
+                            if (isCtrlOrMeta && event.logicalKey == LogicalKeyboardKey.keyA) {
+                              _onSelectAll(true, sortedTorrents);
+                              return KeyEventResult.handled;
                             }
-                          },
-                          const SingleActivator(LogicalKeyboardKey.keyA, control: true): () {
-                            _onSelectAll(true, sortedTorrents);
-                          },
-                          const SingleActivator(LogicalKeyboardKey.keyA, meta: true): () {
-                            _onSelectAll(true, sortedTorrents);
-                          },
-                          const SingleActivator(LogicalKeyboardKey.escape): () {
-                            if (_selectedInfoHashes.isNotEmpty) {
-                              setState(() {
-                                _selectedInfoHashes.clear();
-                                _primarySelectedIH = null;
-                                _anchorInfoHash = null;
-                              });
-                            } else if (_isPanelExpanded) {
-                              setState(() {
-                                _isPanelExpanded = false;
-                              });
+                            if (event.logicalKey == LogicalKeyboardKey.delete) {
+                              if (selectedTorrents.isNotEmpty) {
+                                _removeTorrents(selectedTorrents);
+                              }
+                              return KeyEventResult.handled;
                             }
-                          },
+                            if (event.logicalKey == LogicalKeyboardKey.escape) {
+                              if (_selectedInfoHashes.isNotEmpty) {
+                                setState(() {
+                                  _selectedInfoHashes.clear();
+                                  _primarySelectedIH = null;
+                                  _anchorInfoHash = null;
+                                });
+                                return KeyEventResult.handled;
+                              } else if (_isPanelExpanded) {
+                                setState(() {
+                                  _isPanelExpanded = false;
+                                });
+                                return KeyEventResult.handled;
+                              }
+                            }
+                          }
+                          return KeyEventResult.ignored;
                         },
-                        child: Focus(
-                          autofocus: true,
-                          child: Column(
-                            children: [
-                              if (selectedTorrents.length > 1)
-                                _buildBatchActionBar(context, selectedTorrents),
-                              Expanded(child: memoizedTable),
-                            ],
-                          ),
+                        child: Column(
+                          children: [
+                            if (selectedTorrents.length > 1)
+                              _buildBatchActionBar(context, selectedTorrents),
+                            Expanded(
+                              child: Listener(
+                                behavior: HitTestBehavior.translucent,
+                                onPointerDown: (_) {
+                                  if (!_tableFocusNode.hasFocus) {
+                                    _tableFocusNode.requestFocus();
+                                  }
+                                },
+                                child: memoizedTable,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),

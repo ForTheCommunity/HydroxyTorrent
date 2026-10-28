@@ -4,7 +4,7 @@ import 'dart:io';
 import 'session_models.dart';
 
 class SessionStorage {
-  static const String appName = 'torrentsdigger';
+  static const String appName = 'hydroxy_rc';
   static const String packagePrefix = 'io.gitlab.ForTheCommunity';
   static const String packageName = '$packagePrefix.$appName';
 

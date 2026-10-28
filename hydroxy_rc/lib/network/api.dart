@@ -403,7 +403,10 @@ Future<bool> removeTorrent({
     final response = await client.dio.post(
       '${client.baseUrl}/api/torrent/$infoHash/remove',
       data: {'delete_files': deleteFiles},
-      options: Options(headers: {'Content-Type': 'application/json'}),
+      options: Options(
+        headers: {'Content-Type': 'application/json'},
+        validateStatus: (status) => status != null && status < 500,
+      ),
     );
     return response.statusCode == 200;
   } catch (_) {
