@@ -65,9 +65,7 @@ pub async fn verify_torrent_data_on_disk(
                 }
             }
         }
-        if piece_idx % 8 == 7 {
-            tokio::task::yield_now().await;
-        }
+        tokio::task::yield_now().await;
     }
 
     let mut completed_bytes = 0u64;

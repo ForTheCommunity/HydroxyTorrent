@@ -1,6 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:hydroxy_rc/session//session_storage.dart';
+import 'package:hydroxy_rc/session/session_storage.dart';
 import 'package:hydroxy_rc/configs/web_provider.dart';
 import 'package:hydroxy_rc/network/models.dart';
 
@@ -20,6 +20,7 @@ class ApiClient {
   late final Dio dio;
 
   bool _hasEverConnected = false;
+  int _consecutiveFailures = 0;
   final ValueNotifier<DaemonConnectionState> connectionStateNotifier =
       ValueNotifier<DaemonConnectionState>(DaemonConnectionState.connecting);
 
@@ -28,12 +29,17 @@ class ApiClient {
 
   void markConnected() {
     _hasEverConnected = true;
+    _consecutiveFailures = 0;
     if (connectionStateNotifier.value != DaemonConnectionState.connected) {
       connectionStateNotifier.value = DaemonConnectionState.connected;
     }
   }
 
   void markDisconnected() {
+    _consecutiveFailures++;
+    if (_hasEverConnected && _consecutiveFailures < 2) {
+      return;
+    }
     final next = _hasEverConnected
         ? DaemonConnectionState.disconnected
         : DaemonConnectionState.connecting;
@@ -44,6 +50,7 @@ class ApiClient {
 
   void resetConnectionState() {
     _hasEverConnected = false;
+    _consecutiveFailures = 0;
     connectionStateNotifier.value = DaemonConnectionState.connecting;
   }
 
@@ -51,8 +58,8 @@ class ApiClient {
     _baseUrl = _detectInitialBaseUrl();
     dio = Dio(BaseOptions(
       baseUrl: _baseUrl,
-      connectTimeout: const Duration(seconds: 5),
-      receiveTimeout: const Duration(seconds: 5),
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 15),
     ));
 
     dio.interceptors.add(InterceptorsWrapper(
@@ -282,7 +289,7 @@ Future<SystemStatsModel> getSystemStats({String? serverHostUrl}) async {
 
   final response = await client.dio.get(
     '${client.baseUrl}/api/system/stats',
-    options: Options(receiveTimeout: const Duration(seconds: 3)),
+    options: Options(receiveTimeout: const Duration(seconds: 10)),
   );
   return SystemStatsModel.fromJson(response.data as Map<String, dynamic>);
 }

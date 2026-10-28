@@ -2,7 +2,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use hydroxy_config::HydroxyConfig;
@@ -16,13 +16,13 @@ const MAX_LOG_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 struct RotatingFileState {
     path: PathBuf,
-    file: File,
+    file: std::io::BufWriter<File>,
     bytes_written: u64,
 }
 
 #[derive(Clone)]
 struct RotatingLogWriter {
-    state: Arc<Mutex<RotatingFileState>>,
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
 }
 
 impl RotatingLogWriter {
@@ -38,41 +38,58 @@ impl RotatingLogWriter {
             .write(true)
             .truncate(true)
             .open(path)?;
-        Ok(Self {
-            state: Arc::new(Mutex::new(RotatingFileState {
-                path: path.to_path_buf(),
-                file,
-                bytes_written: 0,
-            })),
-        })
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4096);
+        let mut state = RotatingFileState {
+            path: path.to_path_buf(),
+            file: std::io::BufWriter::with_capacity(64 * 1024, file),
+            bytes_written: 0,
+        };
+
+        std::thread::Builder::new()
+            .name("hydroxy-log-writer".into())
+            .spawn(move || {
+                while let Ok(buf) = rx.recv() {
+                    Self::write_chunk(&mut state, &buf);
+                    while let Ok(more) = rx.try_recv() {
+                        Self::write_chunk(&mut state, &more);
+                    }
+                    let _ = state.file.flush();
+                }
+            })?;
+
+        Ok(Self { tx })
+    }
+
+    fn write_chunk(state: &mut RotatingFileState, buf: &[u8]) {
+        if state.bytes_written + (buf.len() as u64) > MAX_LOG_FILE_SIZE {
+            let _ = state.file.flush();
+            let backup = state.path.with_extension("log.1");
+            let _ = std::fs::rename(&state.path, backup);
+            if let Ok(new_file) = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&state.path)
+            {
+                state.file = std::io::BufWriter::with_capacity(64 * 1024, new_file);
+                state.bytes_written = 0;
+            }
+        }
+        if let Ok(n) = state.file.write(buf) {
+            state.bytes_written += n as u64;
+        }
     }
 }
 
 impl Write for RotatingLogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self.state.lock().unwrap();
-        if guard.bytes_written + (buf.len() as u64) > MAX_LOG_FILE_SIZE {
-            let _ = guard.file.flush();
-            let backup = guard.path.with_extension("log.1");
-            let _ = std::fs::rename(&guard.path, backup);
-            if let Ok(new_file) = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&guard.path)
-            {
-                guard.file = new_file;
-                guard.bytes_written = 0;
-            }
-        }
-        let n = guard.file.write(buf)?;
-        guard.bytes_written += n as u64;
-        Ok(n)
+        let _ = self.tx.try_send(buf.to_vec());
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let mut guard = self.state.lock().unwrap();
-        guard.file.flush()
+        Ok(())
     }
 }
 
@@ -137,33 +154,16 @@ fn main() {
             }
         };
 
-        let log_file_out = match std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&log_path)
-        {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Failed to open log file {}: {}", log_path.display(), e);
-                std::process::exit(1);
-            }
-        };
-
-        let log_file_err = match log_file_out.try_clone() {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Failed to clone log file handle: {}", e);
-                std::process::exit(1);
-            }
-        };
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
 
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--daemon-child")
             .env("HYDROXY_DAEMON_CHILD", "1")
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::from(log_file_out))
-            .stderr(std::process::Stdio::from(log_file_err));
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
 
         #[cfg(unix)]
         {
@@ -211,7 +211,7 @@ fn main() {
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .max_blocking_threads(8)
+        .max_blocking_threads(32)
         .thread_keep_alive(std::time::Duration::from_secs(10))
         .enable_all()
         .build()

@@ -38,6 +38,7 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
   bool _hasRegexError = false;
 
   Timer? _statsTimer;
+  bool _isFetchingStats = false;
   SystemStatsModel? _systemStats;
 
   @override
@@ -59,6 +60,8 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
   }
 
   Future<void> _fetchSystemStats() async {
+    if (_isFetchingStats) return;
+    _isFetchingStats = true;
     try {
       final stats = await getSystemStats();
       if (mounted) {
@@ -72,6 +75,8 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
           _systemStats = null;
         });
       }
+    } finally {
+      _isFetchingStats = false;
     }
   }
 

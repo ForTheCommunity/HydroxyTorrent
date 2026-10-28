@@ -140,8 +140,9 @@ impl TorrentState {
             .await?;
         }
 
-        let file =
-            std::fs::read(file_path).map_err(hydroxy_storage_io::errors::StorageIOError::from)?;
+        let file = tokio::fs::read(file_path)
+            .await
+            .map_err(hydroxy_storage_io::errors::StorageIOError::from)?;
 
         Ok(Self::decode_state(file)?)
     }
@@ -153,15 +154,15 @@ impl TorrentState {
 
         let state_dir = HydroxyConfig::state_dir()?;
         if !state_dir.exists() {
-            std::fs::create_dir_all(&state_dir)?;
+            tokio::fs::create_dir_all(&state_dir).await?;
         }
         let file_path = state_dir.join(file_name);
         let tmp_path = state_dir.join(tmp_file_name);
 
         // Write to a temporary file first and atomically rename over the target state file
         // so an unexpected exit or crash mid-write can never corrupt or truncate `.hot_state`.
-        std::fs::write(&tmp_path, &encoded_data)?;
-        std::fs::rename(&tmp_path, &file_path)?;
+        tokio::fs::write(&tmp_path, &encoded_data).await?;
+        tokio::fs::rename(&tmp_path, &file_path).await?;
         Ok(())
     }
 
@@ -222,7 +223,7 @@ impl TorrentState {
             })
             .collect::<Vec<String>>();
 
-        println!(
+        tracing::debug!(
             "DECODED TRACKERS FROM HOT FILE -> {:?} | v: {} | paused : {} | sequential : {} | info hash v1 {:?} | added time {} | dl: {} | ul: {}",
             trackers, version, paused, sequential, info_hash_v1, added_time, total_downloaded, total_uploaded
         );

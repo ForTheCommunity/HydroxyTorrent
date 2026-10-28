@@ -29,7 +29,11 @@ pub async fn start_server(
     torrent_controls: Arc<TorrentControlRegistry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let web_ui_enabled = remote_config.web_ui_enabled;
-    let server_state = Arc::new(ServerState::new(stats_registry, remote_config, torrent_controls));
+    let server_state = Arc::new(ServerState::new_with_persistence(
+        stats_registry,
+        remote_config,
+        torrent_controls,
+    ));
 
     // Public API routes (no auth required)
     let public_api = Router::new()

@@ -59,6 +59,7 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Timer? _statsTimer;
+  bool _isFetchingStats = false;
   SystemStatsModel? _systemStats;
 
   @override
@@ -79,6 +80,8 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _fetchSystemStats() async {
+    if (_isFetchingStats) return;
+    _isFetchingStats = true;
     try {
       final stats = await getSystemStats();
       if (mounted) {
@@ -92,6 +95,8 @@ class _MainScreenState extends State<MainScreen> {
           _systemStats = null;
         });
       }
+    } finally {
+      _isFetchingStats = false;
     }
   }
 

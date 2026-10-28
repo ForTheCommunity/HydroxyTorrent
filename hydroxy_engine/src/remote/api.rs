@@ -26,6 +26,7 @@ pub struct ServerState {
     pub remote_config: RemoteConfig,
     pub active_sessions: RwLock<VecDeque<String>>,
     pub torrent_controls: Arc<TorrentControlRegistry>,
+    pub persist_sessions: bool,
 }
 
 impl ServerState {
@@ -39,15 +40,77 @@ impl ServerState {
             remote_config,
             active_sessions: RwLock::new(VecDeque::new()),
             torrent_controls,
+            persist_sessions: false,
+        }
+    }
+
+    pub fn new_with_persistence(
+        stats: Arc<StatsRegistry>,
+        remote_config: RemoteConfig,
+        torrent_controls: Arc<TorrentControlRegistry>,
+    ) -> Self {
+        let initial_sessions = Self::load_persisted_sessions();
+        Self {
+            stats,
+            remote_config,
+            active_sessions: RwLock::new(initial_sessions),
+            torrent_controls,
+            persist_sessions: true,
+        }
+    }
+
+    fn sessions_file_path() -> Option<std::path::PathBuf> {
+        HydroxyConfig::state_dir()
+            .ok()
+            .map(|dir| dir.join("active_sessions.json"))
+    }
+
+    fn load_persisted_sessions() -> VecDeque<String> {
+        let Some(path) = Self::sessions_file_path() else {
+            return VecDeque::new();
+        };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return VecDeque::new();
+        };
+        let Ok(mut list) = serde_json::from_str::<VecDeque<String>>(&content) else {
+            return VecDeque::new();
+        };
+        while list.len() > MAX_ACTIVE_SESSIONS {
+            list.pop_front();
+        }
+        list
+    }
+
+    fn save_persisted_sessions(&self, sessions: &VecDeque<String>) {
+        if !self.persist_sessions {
+            return;
+        }
+        if let Some(path) = Self::sessions_file_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string(sessions) {
+                let _ = std::fs::write(&path, json);
+                hydroxy_config::secure_file_permissions(&path);
+            }
         }
     }
 
     pub fn add_session(&self, token: impl Into<String>) {
+        let token = token.into();
         let mut sessions = self.active_sessions.write().unwrap();
+        sessions.retain(|s| s != &token);
         while sessions.len() >= MAX_ACTIVE_SESSIONS {
             sessions.pop_front();
         }
-        sessions.push_back(token.into());
+        sessions.push_back(token);
+        self.save_persisted_sessions(&sessions);
+    }
+
+    pub fn remove_session(&self, token: &str) {
+        let mut sessions = self.active_sessions.write().unwrap();
+        sessions.retain(|s| s != token);
+        self.save_persisted_sessions(&sessions);
     }
 }
 
@@ -106,9 +169,8 @@ pub async fn logout_handler(
     State(state): State<Arc<ServerState>>,
     req: Request,
 ) -> impl IntoResponse {
-    if let Some(token) = extract_token(&req) {
-        let mut sessions = state.active_sessions.write().unwrap();
-        sessions.retain(|s| s != &token);
+    for token in extract_all_tokens(&req) {
+        state.remove_session(&token);
     }
 
     let mut headers = axum::http::HeaderMap::new();
@@ -132,15 +194,25 @@ pub async fn auth_status_handler(
     State(state): State<Arc<ServerState>>,
     req: Request,
 ) -> impl IntoResponse {
-    let token = extract_token(&req).unwrap_or_default();
+    let candidates = extract_all_tokens(&req);
+    let active = state.active_sessions.read().unwrap();
+    let matched_token = candidates
+        .iter()
+        .find(|t| active.contains(*t))
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+        .unwrap_or_default();
+    drop(active);
+
     Json(serde_json::json!({
         "authenticated": true,
         "username": state.remote_config.username,
-        "token": token
+        "token": matched_token
     }))
 }
 
-pub fn extract_token(req: &Request) -> Option<String> {
+pub fn extract_all_tokens(req: &Request) -> Vec<String> {
+    let mut tokens = Vec::new();
     let headers = req.headers();
 
     // Authorization: Bearer <token>
@@ -149,13 +221,19 @@ pub fn extract_token(req: &Request) -> Option<String> {
         .and_then(|h| h.to_str().ok())
     {
         if let Some(token) = auth_val.strip_prefix("Bearer ") {
-            return Some(token.trim().to_string());
+            let trimmed = token.trim();
+            if !trimmed.is_empty() {
+                tokens.push(trimmed.to_string());
+            }
         }
     }
 
     // X-Hydroxy-Token: <token>
     if let Some(token_val) = headers.get("x-hydroxy-token").and_then(|h| h.to_str().ok()) {
-        return Some(token_val.trim().to_string());
+        let trimmed = token_val.trim();
+        if !trimmed.is_empty() && !tokens.iter().any(|t| t == trimmed) {
+            tokens.push(trimmed.to_string());
+        }
     }
 
     // Cookie: hydroxy_session=<token>
@@ -166,18 +244,27 @@ pub fn extract_token(req: &Request) -> Option<String> {
         for cookie in cookie_val.split(';') {
             let cookie = cookie.trim();
             if let Some(token) = cookie.strip_prefix("hydroxy_session=") {
-                return Some(token.trim().to_string());
+                let trimmed = token.trim();
+                if !trimmed.is_empty() && !tokens.iter().any(|t| t == trimmed) {
+                    tokens.push(trimmed.to_string());
+                }
             }
         }
     }
 
-    None
+    tokens
+}
+
+pub fn extract_token(req: &Request) -> Option<String> {
+    extract_all_tokens(req).into_iter().next()
 }
 
 pub fn is_authenticated(state: &ServerState, req: &Request) -> bool {
-    // Check token sessions
-    if let Some(token) = extract_token(req) {
-        if state.active_sessions.read().unwrap().contains(&token) {
+    // Check all candidate token headers / cookies against active sessions
+    let candidates = extract_all_tokens(req);
+    if !candidates.is_empty() {
+        let sessions = state.active_sessions.read().unwrap();
+        if candidates.iter().any(|t| sessions.contains(t)) {
             return true;
         }
     }
@@ -688,7 +775,7 @@ pub async fn get_system_stats() -> impl IntoResponse {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        if let Ok(meminfo) = tokio::fs::read_to_string("/proc/meminfo").await {
             for line in meminfo.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
                     if let Some(val_str) = rest.trim().split_whitespace().next() {
@@ -706,7 +793,7 @@ pub async fn get_system_stats() -> impl IntoResponse {
             }
         }
 
-        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Ok(status) = tokio::fs::read_to_string("/proc/self/status").await {
             for line in status.lines() {
                 if let Some(rest) = line.strip_prefix("VmRSS:") {
                     if let Some(val_str) = rest.trim().split_whitespace().next() {

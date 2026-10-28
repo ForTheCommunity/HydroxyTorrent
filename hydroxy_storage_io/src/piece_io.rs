@@ -1,13 +1,7 @@
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::SeekFrom;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::{errors::StorageIOError, file_region::FileRegion};
-
-fn run_disk_io<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    f()
-}
 
 pub struct PieceIO {
     pub file_map: Vec<FileRegion>,
@@ -33,45 +27,44 @@ impl PieceIO {
         piece_length: u32,
         data: &[u8],
     ) -> Result<(), StorageIOError> {
-        run_disk_io(|| {
-            let piece_start = piece_index as u64 * piece_length as u64;
-            let piece_end = piece_start + data.len() as u64;
+        let piece_start = piece_index as u64 * piece_length as u64;
+        let piece_end = piece_start + data.len() as u64;
 
-            for region in file_map {
-                let region_end = region.offset_in_torrent + region.length;
+        for region in file_map {
+            let region_end = region.offset_in_torrent + region.length;
 
-                // skipping files that doesn't overlap with this piece
-                if piece_start >= region_end || piece_end <= region.offset_in_torrent {
-                    continue;
-                }
-
-                let overlap_start = piece_start.max(region.offset_in_torrent);
-                let overlap_end = piece_end.min(region_end);
-
-                let data_offset = (overlap_start - piece_start) as usize;
-                let data_slice =
-                    &data[data_offset..data_offset + (overlap_end - overlap_start) as usize];
-                let file_offset = overlap_start - region.offset_in_torrent;
-
-                // creating parent dirs if not exists.
-                let path = std::path::Path::new(&region.path);
-                if let Some(parent) = path.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                }
-
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .open(path)?;
-
-                file.seek(SeekFrom::Start(file_offset))?;
-                file.write_all(data_slice)?;
+            // skipping files that doesn't overlap with this piece
+            if piece_start >= region_end || piece_end <= region.offset_in_torrent {
+                continue;
             }
 
-            Ok(())
-        })
+            let overlap_start = piece_start.max(region.offset_in_torrent);
+            let overlap_end = piece_end.min(region_end);
+
+            let data_offset = (overlap_start - piece_start) as usize;
+            let data_slice =
+                &data[data_offset..data_offset + (overlap_end - overlap_start) as usize];
+            let file_offset = overlap_start - region.offset_in_torrent;
+
+            // creating parent dirs if not exists.
+            let path = std::path::Path::new(&region.path);
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+            }
+
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(path)
+                .await?;
+
+            file.seek(SeekFrom::Start(file_offset)).await?;
+            file.write_all(data_slice).await?;
+        }
+
+        Ok(())
     }
 
     /// Reads only a specific `[begin .. begin + length]` sub-block of a piece from disk,
@@ -99,43 +92,42 @@ impl PieceIO {
             return Ok(None);
         }
 
-        run_disk_io(|| {
-            let block_start = piece_start + begin as u64;
-            let block_end = block_start + length as u64;
-            let mut block_buffer = vec![0u8; length as usize];
+        let block_start = piece_start + begin as u64;
+        let block_end = block_start + length as u64;
+        let mut block_buffer = vec![0u8; length as usize];
 
-            for region in file_map {
-                let region_end = region.offset_in_torrent + region.length;
-                if block_start >= region_end || block_end <= region.offset_in_torrent {
-                    continue;
-                }
-
-                let path = std::path::Path::new(&region.path);
-                let overlap_start = block_start.max(region.offset_in_torrent);
-                let overlap_end = block_end.min(region_end);
-                let overlap_len = (overlap_end - overlap_start) as usize;
-                let data_offset = (overlap_start - block_start) as usize;
-                let file_offset = overlap_start - region.offset_in_torrent;
-
-                let mut file = match std::fs::File::open(path) {
-                    Ok(f) => f,
-                    Err(_) => return Ok(None),
-                };
-
-                if file.seek(SeekFrom::Start(file_offset)).is_err() {
-                    return Ok(None);
-                }
-
-                if file
-                    .read_exact(&mut block_buffer[data_offset..data_offset + overlap_len])
-                    .is_err()
-                {
-                    return Ok(None);
-                }
+        for region in file_map {
+            let region_end = region.offset_in_torrent + region.length;
+            if block_start >= region_end || block_end <= region.offset_in_torrent {
+                continue;
             }
 
-            Ok(Some(block_buffer))
-        })
+            let path = std::path::Path::new(&region.path);
+            let overlap_start = block_start.max(region.offset_in_torrent);
+            let overlap_end = block_end.min(region_end);
+            let overlap_len = (overlap_end - overlap_start) as usize;
+            let data_offset = (overlap_start - block_start) as usize;
+            let file_offset = overlap_start - region.offset_in_torrent;
+
+            let mut file = match tokio::fs::File::open(path).await {
+                Ok(f) => f,
+                Err(_) => return Ok(None),
+            };
+
+            if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
+                return Ok(None);
+            }
+
+            if file
+                .read_exact(&mut block_buffer[data_offset..data_offset + overlap_len])
+                .await
+                .is_err()
+            {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(block_buffer))
     }
 
     pub async fn read_piece_from_disk(
