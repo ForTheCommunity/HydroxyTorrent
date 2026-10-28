@@ -426,16 +426,32 @@ impl TorrentTask {
                                         zero_speed_since = Some(std::time::Instant::now());
                                     }
                                     Some(since) => {
-                                        // After 60 seconds of 0 B/s, mark as stalled and release active quota
+                                        // After 60 seconds of 0 B/s, mark status as stalled in registry
                                         if since.elapsed() >= std::time::Duration::from_secs(60) {
                                             if !is_stalled {
                                                 is_stalled = true;
-                                                self.queue_manager.mark_stalled(&info_hash).await;
                                                 self.stats_registry.set_status(&info_hash_sha1, Some("stalled".to_string()));
                                                 info!(
-                                                    "Torrent {} is stalled (0 B/s for >60s), releasing active slot to queued torrents",
+                                                    "Torrent {} is stalled (0 B/s for >60s)",
                                                     info_hash_sha1
                                                 );
+                                            }
+
+                                            // If other torrents are waiting in queue, yield active slot to rotate and fill download quota
+                                            if self.queue_manager.has_waiting().await {
+                                                info!(
+                                                    "Torrent {} yielding active slot to waiting queue for rotation",
+                                                    info_hash_sha1
+                                                );
+                                                has_download_slot = false;
+                                                zero_speed_since = None;
+                                                is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
+                                                worker_set.shutdown().await;
+                                                piece_allocator.lock().await.reset_in_progress();
+                                                connected_peers.lock().await.clear();
+                                                self.stats_registry.clear_peers(&info_hash_sha1);
+
+                                                slot_rx = self.queue_manager.yield_stalled_slot(info_hash).await;
                                             }
                                         }
                                     }
@@ -444,10 +460,9 @@ impl TorrentTask {
                                 zero_speed_since = None;
                                 if is_stalled {
                                     is_stalled = false;
-                                    self.queue_manager.mark_active(&info_hash).await;
                                     self.stats_registry.set_status(&info_hash_sha1, None);
                                     info!(
-                                        "Torrent {} resumed active downloading ({:.1} B/s), reclaiming active slot",
+                                        "Torrent {} resumed active downloading ({:.1} B/s)",
                                         info_hash_sha1, speed
                                     );
                                 }
