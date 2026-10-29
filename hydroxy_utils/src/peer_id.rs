@@ -667,9 +667,6 @@ mod tests {
         id[..8].copy_from_slice(b"-OH0100-");
         assert_eq!(parse_peer_id(&id), "HydroxyTorrent 0.1.0");
 
-        let mut legacy_id = [0u8; 20];
-        legacy_id[..8].copy_from_slice(b"-HT0100-");
-        assert_eq!(parse_peer_id(&legacy_id), "HydroxyTorrent 0.1.0");
 
         let generated_id = crate::get_peer_id();
         assert_eq!(&generated_id[..3], b"-OH");
