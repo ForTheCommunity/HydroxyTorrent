@@ -60,7 +60,7 @@ impl ServerState {
     }
 
     fn sessions_file_path() -> Option<std::path::PathBuf> {
-        HydroxyConfig::state_dir()
+        HydroxyConfig::data_dir()
             .ok()
             .map(|dir| dir.join("active_sessions.json"))
     }
@@ -1154,5 +1154,14 @@ mod tests {
         assert!(lines.first().unwrap().ends_with("line number 951"));
 
         let _ = tokio::fs::remove_file(&temp_file).await;
+    }
+
+    #[test]
+    fn test_sessions_file_path_location() {
+        let expected_data_dir = HydroxyConfig::data_dir().unwrap();
+        let expected_sessions_file = expected_data_dir.join("active_sessions.json");
+        let path = ServerState::sessions_file_path().unwrap();
+        assert_eq!(path, expected_sessions_file);
+        assert_ne!(path, HydroxyConfig::state_dir().unwrap().join("active_sessions.json"));
     }
 }
