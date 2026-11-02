@@ -8,3 +8,6 @@ f:
 run:
 	clear;
 	cargo run;
+clean:
+	cargo clean;
+	cd hydroxy_rc && flutter clean 

@@ -1032,7 +1032,6 @@ impl TorrentTask {
         is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
         re_announce_handle.abort();
         self.inbound_registry.unregister(&info_hash).await;
-        self.control_registry.unregister(&info_hash_sha1);
         self.queue_manager.release_download_slot(&info_hash).await;
 
         let (final_downloaded, final_remaining, is_complete) = {
@@ -1048,18 +1047,24 @@ impl TorrentTask {
         } else {
             Some(TrackerEvents::Stopped)
         };
-        let _ = Self::announce_to_trackers(
-            &trackers,
-            &info_hash,
-            session_peer_id,
-            self.listen_port,
-            final_downloaded,
-            0,
-            final_remaining,
-            final_event,
-            Some((&self.stats_registry, &info_hash_sha1)),
+        // Cap final tracker announce at 2 seconds so unresponsive trackers never block shutdown
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            Self::announce_to_trackers(
+                &trackers,
+                &info_hash,
+                session_peer_id,
+                self.listen_port,
+                final_downloaded,
+                0,
+                final_remaining,
+                final_event,
+                Some((&self.stats_registry, &info_hash_sha1)),
+            ),
         )
         .await;
+
+        self.control_registry.unregister(&info_hash_sha1);
 
         Ok(())
     }

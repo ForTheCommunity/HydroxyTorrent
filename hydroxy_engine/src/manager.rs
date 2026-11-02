@@ -35,9 +35,21 @@ impl Manager {
 
         // Check watch directory periodically every minute
         let mut scan_interval = tokio::time::interval(Duration::from_secs(60));
+        let shutdown_notify = control_registry.shutdown_notify();
 
         loop {
-            scan_interval.tick().await;
+            tokio::select! {
+                _ = scan_interval.tick() => {},
+                _ = shutdown_notify.notified() => {
+                    info!(target: "major", "Watch directory scanner stopped for shutdown");
+                    break;
+                }
+            }
+
+            if control_registry.is_shutting_down() {
+                info!(target: "major", "Watch directory scanner stopped for shutdown");
+                break;
+            }
 
             let config = match HydroxyConfig::init() {
                 Ok(cfg) => cfg,
@@ -164,5 +176,7 @@ impl Manager {
 
             known_files.retain(|path, _| seen_paths.contains(path));
         }
+
+        Ok(())
     }
 }

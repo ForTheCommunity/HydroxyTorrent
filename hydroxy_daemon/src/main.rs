@@ -406,11 +406,38 @@ async fn run_daemon() {
         info!(target: "major", "RPC is disabled. Web UI automatically disabled.");
     }
 
-    // Keep process alive until Ctrl+C / SIGTERM
-    tokio::signal::ctrl_c().await.unwrap();
-    info!(target: "major", "Shutdown signal received, closing Hydroxy Torrent...");
-    control_registry
-        .broadcast_command(hydroxy_engine::control::TorrentCommand::Shutdown)
+    // Keep process alive until Ctrl+C (SIGINT) or SIGTERM
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!(target: "major", "Shutdown signal received (Ctrl+C / SIGINT), closing Hydroxy Torrent...");
+            }
+            _ = sigterm.recv() => {
+                info!(target: "major", "Shutdown signal received (SIGTERM), closing Hydroxy Torrent...");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.unwrap();
+        info!(target: "major", "Shutdown signal received, closing Hydroxy Torrent...");
+    }
+
+    // Gracefully await all torrent tasks to finish saving state and closing peers (up to 10s)
+    let pending = control_registry
+        .shutdown_and_wait(std::time::Duration::from_secs(10))
         .await;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    if pending == 0 {
+        info!(target: "major", "All torrent tasks safely saved and closed. Goodbye!");
+    } else {
+        warn!(
+            target: "major",
+            "Shutdown timed out with {} torrent tasks still pending. Exiting forcefully.",
+            pending
+        );
+    }
 }

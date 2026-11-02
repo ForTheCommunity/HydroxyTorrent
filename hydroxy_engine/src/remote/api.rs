@@ -781,8 +781,12 @@ pub async fn shutdown_daemon(State(state): State<Arc<ServerState>>) -> impl Into
     tracing::info!(target: "major", "Daemon shutdown requested via RPC API...");
     let controls = Arc::clone(&state.torrent_controls);
     tokio::spawn(async move {
-        controls.broadcast_command(TorrentCommand::Shutdown).await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        let pending = controls.shutdown_and_wait(tokio::time::Duration::from_secs(10)).await;
+        if pending == 0 {
+            tracing::info!(target: "major", "All torrent tasks safely saved and closed via RPC shutdown.");
+        } else {
+            tracing::warn!(target: "major", "RPC shutdown timed out with {} torrent tasks still pending.", pending);
+        }
         std::process::exit(0);
     });
 
