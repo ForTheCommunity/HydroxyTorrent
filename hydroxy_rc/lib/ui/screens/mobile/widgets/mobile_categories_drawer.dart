@@ -204,83 +204,61 @@ class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
                   Text(
                     'Remote Client',
                     style: TextStyle(
-                      color: Color.fromRGBO(colors.titleBarTextColor.red, colors.titleBarTextColor.green, colors.titleBarTextColor.blue, 0.7),
-                      fontSize: 12,
+                      color: Color.fromRGBO(colors.sidebarItemTextColor.red, colors.sidebarItemTextColor.green, colors.sidebarItemTextColor.blue, 0.7),
+                      fontSize: 11,
                     ),
                   ),
                 ],
               ),
             ],
           ),
+
           if (widget.systemStats != null) ...[
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildHeaderStat(
-                    icon: Icons.arrow_downward_rounded,
-                    label: 'Down',
-                    value: formatSpeed(widget.systemStats!.downloadSpeed),
-                    color: colors.downloadSpeedColor,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: colors.searchBarBackgroundColor,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: colors.dividerColor, width: 0.8),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.memory_rounded,
+                    size: 14,
+                    color: colors.accentPurpleColor,
                   ),
-                ),
-                Expanded(
-                  child: _buildHeaderStat(
-                    icon: Icons.arrow_upward_rounded,
-                    label: 'Up',
-                    value: formatSpeed(widget.systemStats!.uploadSpeed),
-                    color: colors.uploadSpeedColor,
+                  const SizedBox(width: 6),
+                  Text(
+                    'Daemon: ${formatBytesDynamic(widget.systemStats!.processRssBytes.toString())}',
+                    style: TextStyle(
+                      color: colors.sidebarItemTextColor,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
                   ),
-                ),
-                Expanded(
-                  child: _buildHeaderStat(
-                    icon: Icons.hub_rounded,
-                    label: 'Peers',
-                    value: '${widget.systemStats!.peers}',
+                  const Spacer(),
+                  Icon(
+                    Icons.pie_chart_outline_rounded,
+                    size: 14,
                     color: colors.accentBlueColor,
                   ),
-                ),
-              ],
+                  const SizedBox(width: 6),
+                  Text(
+                    'Sys: ${(widget.systemStats!.systemMemoryUsagePercent * 100).toStringAsFixed(0)}%',
+                    style: TextStyle(
+                      color: colors.sidebarItemTextColor,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ],
       ),
-    );
-  }
-
-  Widget _buildHeaderStat({
-    required IconData icon,
-    required String label,
-    required String value,
-    required Color color,
-  }) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 14, color: color),
-        const SizedBox(width: 4),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white54,
-                fontSize: 9,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            Text(
-              value,
-              style: TextStyle(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-      ],
     );
   }
 
@@ -555,87 +533,84 @@ class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
 
   Widget _buildDrawerFooter(BuildContext context) {
     final colors = context.appColors;
+    final themesBloc = context.read<ThemesBloc>();
 
-    return Container(
+    return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      color: colors.titleBarBackgroundColor,
       child: Column(
         children: [
-          // Theme Selector Row
-          BlocBuilder<ThemesBloc, ThemesState>(
-            builder: (context, state) {
-              final currentTheme = state.maybeWhen(
-                changed: (theme) => theme,
-                orElse: () => AppTheme.dark,
-              );
-
-              return Row(
+          // Theme Selector Tile
+          PopupMenuButton<AppTheme>(
+            color: colors.popupMenuBackgroundColor,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(color: colors.popupMenuBorderColor),
+            ),
+            onSelected: (theme) => themesBloc.add(ChangeThemeEvent(theme)),
+            itemBuilder: (context) {
+              return ThemesBloc.availableThemes.map((theme) {
+                final isSelected = theme.themeCode == colors.themeCode;
+                return PopupMenuItem<AppTheme>(
+                  value: theme,
+                  child: Row(
+                    children: [
+                      Icon(
+                        isSelected ? Icons.check_circle : Icons.circle_outlined,
+                        size: 16,
+                        color: isSelected
+                            ? colors.accentGreenColor
+                            : colors.tableSecondaryTextColor,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        theme.themeName,
+                        style: TextStyle(
+                          color: isSelected
+                              ? colors.tablePrimaryTextColor
+                              : colors.tableSecondaryTextColor,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList();
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: colors.dividerColor),
+              ),
+              child: Row(
                 children: [
                   Icon(
                     Icons.palette_outlined,
-                    size: 16,
-                    color: colors.titleBarTextColor,
+                    size: 18,
+                    color: colors.titleBarIconColor,
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Text(
-                    'Theme:',
+                    'Theme: ${colors.themeName}',
                     style: TextStyle(
-                      color: colors.titleBarTextColor,
+                      color: colors.sidebarItemTextColor,
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Container(
-                      height: 28,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      decoration: BoxDecoration(
-                        color: colors.sidebarBackgroundColor,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: colors.dividerColor),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<AppTheme>(
-                          value: currentTheme,
-                          dropdownColor: colors.sidebarBackgroundColor,
-                          isDense: true,
-                          icon: Icon(
-                            Icons.arrow_drop_down,
-                            size: 16,
-                            color: colors.titleBarTextColor,
-                          ),
-                          items: AppTheme.values.map((theme) {
-                            return DropdownMenuItem<AppTheme>(
-                              value: theme,
-                              child: Text(
-                                theme.name.toUpperCase(),
-                                style: TextStyle(
-                                  color: colors.tablePrimaryTextColor,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                          onChanged: (newTheme) {
-                            if (newTheme != null) {
-                              context.read<ThemesBloc>().add(
-                                    ThemesEvent.changeTheme(theme: newTheme),
-                                  );
-                            }
-                          },
-                        ),
-                      ),
-                    ),
+                  const Spacer(),
+                  Icon(
+                    Icons.arrow_drop_down,
+                    size: 18,
+                    color: colors.sidebarItemTextColor,
                   ),
                 ],
-              );
-            },
+              ),
+            ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
 
-          // Action Buttons: Logs, Logout, Shutdown
+          // Action Buttons Row: Logs, Logout, Shutdown
           Row(
             children: [
               Expanded(
