@@ -73,6 +73,12 @@ password = ""
 [Limitations]
 # Maximum concurrent active downloads (0 = unlimited, default 15)
 max_active_downloads = 15
+# Do not count slow torrents in download limits
+dont_count_slow_torrents = true
+# Download rate threshold in KB/s below which a torrent is considered slow (default 10 KB/s)
+slow_torrent_dl_rate_threshold_kbps = 10
+# Inactivity timer in seconds before a low-speed torrent is classified as slow (default 60s)
+slow_torrent_inactive_timer_secs = 60
 # Maximum concurrent active uploads / seeding torrents (0 = unlimited, default 5)
 max_active_uploads = 5
 # Global download rate limit in KB/s (0 = unlimited)

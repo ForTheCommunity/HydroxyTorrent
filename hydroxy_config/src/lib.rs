@@ -75,12 +75,30 @@ fn default_max_total_peers() -> usize {
     300
 }
 
+fn default_dont_count_slow_torrents() -> bool {
+    true
+}
+
+fn default_slow_torrent_dl_rate_threshold_kbps() -> u64 {
+    10
+}
+
+fn default_slow_torrent_inactive_timer_secs() -> u64 {
+    60
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SessionConfig {
     #[serde(default = "default_max_active_downloads")]
     pub max_active_downloads: usize,
     #[serde(default = "default_max_active_uploads")]
     pub max_active_uploads: usize,
+    #[serde(default = "default_dont_count_slow_torrents")]
+    pub dont_count_slow_torrents: bool,
+    #[serde(default = "default_slow_torrent_dl_rate_threshold_kbps")]
+    pub slow_torrent_dl_rate_threshold_kbps: u64,
+    #[serde(default = "default_slow_torrent_inactive_timer_secs")]
+    pub slow_torrent_inactive_timer_secs: u64,
     #[serde(default = "default_zero_u64")]
     pub max_download_speed_kbps: u64,
     #[serde(default = "default_zero_u64")]
@@ -91,11 +109,20 @@ pub struct SessionConfig {
     pub max_total_peers: usize,
 }
 
+impl SessionConfig {
+    pub fn slow_dl_rate_threshold_bytes(&self) -> f64 {
+        (self.slow_torrent_dl_rate_threshold_kbps * 1024) as f64
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_active_downloads: default_max_active_downloads(),
             max_active_uploads: default_max_active_uploads(),
+            dont_count_slow_torrents: default_dont_count_slow_torrents(),
+            slow_torrent_dl_rate_threshold_kbps: default_slow_torrent_dl_rate_threshold_kbps(),
+            slow_torrent_inactive_timer_secs: default_slow_torrent_inactive_timer_secs(),
             max_download_speed_kbps: default_zero_u64(),
             max_upload_speed_kbps: default_zero_u64(),
             max_peers_per_torrent: default_max_peers_per_torrent(),
@@ -349,6 +376,9 @@ password = "hashed_password"
         let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize legacy config");
         assert_eq!(config.effective_max_active_downloads(), 7);
         assert_eq!(config.session_config.max_active_uploads, 5);
+        assert_eq!(config.session_config.dont_count_slow_torrents, true);
+        assert_eq!(config.session_config.slow_torrent_dl_rate_threshold_kbps, 10);
+        assert_eq!(config.session_config.slow_torrent_inactive_timer_secs, 60);
         assert_eq!(config.session_config.max_peers_per_torrent, 50);
         assert_eq!(config.session_config.max_total_peers, 300);
         assert_eq!(config.storage_config[0].watch_directory_max_depth, 2);

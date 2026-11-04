@@ -454,6 +454,7 @@ impl TorrentTask {
 
         // Inactivity / stall tracking for queue quota management
         let mut zero_speed_since: Option<std::time::Instant> = None;
+        let mut low_speed_since: Option<std::time::Instant> = None;
         let mut is_stalled = false;
         let mut stall_check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
         stall_check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -494,6 +495,7 @@ impl TorrentTask {
                             has_download_slot = false;
                             is_stalled = false;
                             zero_speed_since = None;
+                            low_speed_since = None;
                             self.queue_manager.release_download_slot(&info_hash).await;
                         }
                         self.stats_registry.set_initial_progress(&info_hash_sha1, total_pieces, total_torrent_size);
@@ -532,6 +534,37 @@ impl TorrentTask {
                                 .map(|s| s.download_speed)
                                 .unwrap_or(0.0);
 
+                            let slow_threshold = self.queue_manager.slow_dl_threshold().await;
+                            let slow_inactive = self.queue_manager.slow_inactive_duration().await;
+
+                            // 1. Slow-speed tracking for qBittorrent queue management:
+                            // If speed < slow_threshold for >= slow_inactive, mark as slow so waiting torrents can race
+                            if speed < slow_threshold {
+                                match low_speed_since {
+                                    None => {
+                                        low_speed_since = Some(std::time::Instant::now());
+                                    }
+                                    Some(since) => {
+                                        if since.elapsed() >= slow_inactive {
+                                            self.queue_manager.report_speed(&info_hash, speed, true).await;
+                                        }
+                                    }
+                                }
+                            } else {
+                                low_speed_since = None;
+                                self.queue_manager.report_speed(&info_hash, speed, false).await;
+                                if is_stalled {
+                                    is_stalled = false;
+                                    self.stats_registry.set_status(&info_hash_sha1, None);
+                                    info!(
+                                        "Torrent {} resumed active downloading ({:.1} B/s)",
+                                        info_hash_sha1, speed
+                                    );
+                                }
+                            }
+
+                            // 2. Completely stalled tracking (speed <= 10.0 B/s for 60s):
+                            // If completely dead with no speed and other torrents are waiting in queue, yield slot to rotate
                             if speed <= 10.0 {
                                 match zero_speed_since {
                                     None => {
@@ -557,6 +590,7 @@ impl TorrentTask {
                                                 );
                                                 has_download_slot = false;
                                                 zero_speed_since = None;
+                                                low_speed_since = None;
                                                 is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                                                 worker_set.shutdown().await;
                                                 piece_allocator.lock().await.reset_in_progress();
@@ -570,14 +604,6 @@ impl TorrentTask {
                                 }
                             } else {
                                 zero_speed_since = None;
-                                if is_stalled {
-                                    is_stalled = false;
-                                    self.stats_registry.set_status(&info_hash_sha1, None);
-                                    info!(
-                                        "Torrent {} resumed active downloading ({:.1} B/s)",
-                                        info_hash_sha1, speed
-                                    );
-                                }
                             }
                         }
                     }
@@ -619,6 +645,7 @@ impl TorrentTask {
                             has_download_slot = false;
                             is_stalled = false;
                             zero_speed_since = None;
+                            low_speed_since = None;
                             is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                             self.queue_manager.release_download_slot(&info_hash).await;
                             worker_set.shutdown().await;
@@ -675,6 +702,7 @@ impl TorrentTask {
                             is_paused = false;
                             is_stalled = false;
                             zero_speed_since = None;
+                            low_speed_since = None;
                             let mut state = torrent_state.lock().await;
                             state.paused = 0;
                             let _ = TorrentState::save_state(state.clone()).await;
@@ -955,6 +983,7 @@ impl TorrentTask {
                     has_download_slot = true;
                     is_stalled = false;
                     zero_speed_since = None;
+                    low_speed_since = None;
                     is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
                     self.stats_registry.set_status(&info_hash_sha1, None);
 
@@ -1195,6 +1224,7 @@ impl TorrentTask {
                             has_download_slot = false;
                             is_stalled = false;
                             zero_speed_since = None;
+                            low_speed_since = None;
                             self.queue_manager.release_download_slot(&info_hash).await;
                         }
                         self.stats_registry.set_initial_progress(&info_hash_sha1, total_pieces, total_torrent_size);

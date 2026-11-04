@@ -60,7 +60,12 @@ impl Manager {
             };
 
             queue_manager
-                .set_max_active(config.effective_max_active_downloads())
+                .update_config(
+                    config.effective_max_active_downloads(),
+                    config.session_config.dont_count_slow_torrents,
+                    config.session_config.slow_dl_rate_threshold_bytes(),
+                    std::time::Duration::from_secs(config.session_config.slow_torrent_inactive_timer_secs),
+                )
                 .await;
 
             let mut seen_paths: HashSet<PathBuf> = HashSet::new();

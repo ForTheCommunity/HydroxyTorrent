@@ -62,8 +62,11 @@ impl HydroxyEngine {
             );
         }
 
-        let queue_manager = Arc::new(DownloadQueueManager::new(
+        let queue_manager = Arc::new(DownloadQueueManager::with_config(
             config.effective_max_active_downloads(),
+            config.session_config.dont_count_slow_torrents,
+            config.session_config.slow_dl_rate_threshold_bytes(),
+            std::time::Duration::from_secs(config.session_config.slow_torrent_inactive_timer_secs),
         ));
 
         Manager::start(
