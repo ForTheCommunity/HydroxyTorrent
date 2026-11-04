@@ -615,30 +615,47 @@ pub async fn remove_torrent(
         remove_state_file(&state_dir, &info_hash).await;
     }
 
-    // Remove dottorrent file from watch directory
+    // Remove dottorrent file and downloaded content across storage targets
     if let Ok(config) = HydroxyConfig::init() {
-        let watch_dir = std::path::PathBuf::from(&config.storage_config.watch_directory);
-        remove_dottorrent_from_dir(&watch_dir, &info_hash).await;
+        let storage_name = torrent_snap
+            .as_ref()
+            .map(|s| s.storage.as_str())
+            .unwrap_or("");
+        let category = torrent_snap
+            .as_ref()
+            .map(|s| s.category.as_str())
+            .unwrap_or("");
+        let name = torrent_snap.as_ref().map(|s| s.name.as_str()).unwrap_or("");
 
-        let fallback_watch = std::path::PathBuf::from("dottorrents");
-        if fallback_watch != watch_dir {
-            remove_dottorrent_from_dir(&fallback_watch, &info_hash).await;
+        let matching_storages: Vec<&hydroxy_config::StorageConfig> = if let Some(st) = config.get_storage(storage_name) {
+            vec![st]
+        } else {
+            config.storage_config.iter().collect()
+        };
+
+        for storage in matching_storages {
+            let watch_dir = std::path::PathBuf::from(&storage.watch_directory);
+            remove_dottorrent_from_dir(&watch_dir, &info_hash).await;
+
+            if delete_files {
+                let download_dir = std::path::PathBuf::from(&storage.download_directory);
+                remove_downloaded_content(&download_dir, category, name, &file_paths).await;
+
+                if let Some(ref temp_dir_str) = storage.temp_directory {
+                    if !temp_dir_str.trim().is_empty() {
+                        let temp_dir = std::path::PathBuf::from(temp_dir_str);
+                        remove_downloaded_content(&temp_dir, category, name, &file_paths).await;
+                    }
+                }
+            }
         }
 
-        // If delete_files requested, remove downloaded content from disk
-        if delete_files {
-            let download_dir = std::path::PathBuf::from(&config.storage_config.download_directory);
-            let category = torrent_snap
-                .as_ref()
-                .map(|s| s.category.as_str())
-                .unwrap_or("");
-            let name = torrent_snap.as_ref().map(|s| s.name.as_str()).unwrap_or("");
-            remove_downloaded_content(&download_dir, category, name, &file_paths).await;
+        let fallback_watch = std::path::PathBuf::from("dottorrents");
+        remove_dottorrent_from_dir(&fallback_watch, &info_hash).await;
 
+        if delete_files {
             let fallback_dl = std::path::PathBuf::from("downloads");
-            if fallback_dl != download_dir {
-                remove_downloaded_content(&fallback_dl, category, name, &file_paths).await;
-            }
+            remove_downloaded_content(&fallback_dl, category, name, &file_paths).await;
         }
     }
 
@@ -1101,6 +1118,7 @@ mod tests {
         state.stats.register_torrent(
             &info_hash,
             "TestTorrent",
+            "default",
             "General",
             10,
             1024,

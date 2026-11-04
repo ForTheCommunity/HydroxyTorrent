@@ -70,6 +70,7 @@ impl PeerStats {
 pub struct TorrentStats {
     pub info_hash: String,
     pub name: String,
+    pub storage: String,
     pub category: String,
     pub total_pieces: usize,
     pub completed_pieces: usize,
@@ -115,6 +116,7 @@ impl TorrentStats {
     pub fn new(
         info_hash: String,
         name: String,
+        storage: String,
         category: String,
         total_pieces: usize,
         piece_length: u32,
@@ -125,6 +127,7 @@ impl TorrentStats {
         Self {
             info_hash,
             name,
+            storage,
             category,
             total_pieces,
             completed_pieces: 0,
@@ -155,6 +158,7 @@ impl TorrentStats {
         TorrentStatsSnapshot {
             info_hash: self.info_hash.clone(),
             name: self.name.clone(),
+            storage: self.storage.clone(),
             category: self.category.clone(),
             total_pieces: self.total_pieces,
             completed_pieces: self.completed_pieces,
@@ -260,6 +264,7 @@ impl SpeedTracker {
 pub struct TorrentStatsSnapshot {
     pub info_hash: String,
     pub name: String,
+    pub storage: String,
     pub category: String,
     pub total_pieces: usize,
     pub completed_pieces: usize,

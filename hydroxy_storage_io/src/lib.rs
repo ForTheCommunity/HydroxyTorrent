@@ -244,6 +244,59 @@ pub async fn read_file_to_bytes(file_path: PathBuf) -> Result<Vec<u8>, StorageIO
     Ok(buffer)
 }
 
+/// Moves a file or directory from `src` to `dst`.
+/// First ensures the parent directory of `dst` exists.
+/// Attempts `tokio::fs::rename(src, dst)`.
+/// If `rename` fails (e.g. cross-device link EXDEV), falls back to recursive copy and remove.
+pub async fn move_file_or_dir(src: &Path, dst: &Path) -> Result<(), StorageIOError> {
+    if !src.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = dst.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).await?;
+        }
+    }
+
+    if fs::rename(src, dst).await.is_ok() {
+        return Ok(());
+    }
+
+    // Fallback: Copy and remove
+    if src.is_file() {
+        fs::copy(src, dst).await?;
+        let _ = fs::remove_file(src).await;
+    } else if src.is_dir() {
+        copy_dir_all(src, dst).await?;
+        let _ = fs::remove_dir_all(src).await;
+    }
+
+    Ok(())
+}
+
+pub fn copy_dir_all<'a>(
+    src: &'a Path,
+    dst: &'a Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageIOError>> + Send + 'a>> {
+    Box::pin(async move {
+        if !dst.exists() {
+            fs::create_dir_all(dst).await?;
+        }
+        let mut entries = fs::read_dir(src).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let entry_path = entry.path();
+            let dest_path = dst.join(entry.file_name());
+            if entry_path.is_dir() {
+                copy_dir_all(&entry_path, &dest_path).await?;
+            } else {
+                fs::copy(&entry_path, &dest_path).await?;
+            }
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +352,40 @@ mod tests {
         assert!(download_dir.join("anime/bleach").exists());
 
         // Cleanup
+        let _ = fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_move_file_or_dir_file_and_directory() {
+        let temp_dir = std::env::temp_dir().join(format!("hydroxy_test_move_{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+        let src_dir = temp_dir.join("src");
+        let dst_dir = temp_dir.join("dst");
+
+        // 1. Test single file move
+        let file_src = src_dir.join("single.txt");
+        let file_dst = dst_dir.join("single.txt");
+        fs::create_dir_all(&src_dir).await.unwrap();
+        fs::write(&file_src, b"hello world").await.unwrap();
+
+        move_file_or_dir(&file_src, &file_dst).await.unwrap();
+        assert!(!file_src.exists());
+        assert!(file_dst.exists());
+        let content = fs::read(&file_dst).await.unwrap();
+        assert_eq!(content, b"hello world");
+
+        // 2. Test directory move with nested files
+        let folder_src = src_dir.join("my_torrent");
+        let folder_dst = dst_dir.join("my_torrent");
+        fs::create_dir_all(folder_src.join("subfolder")).await.unwrap();
+        fs::write(folder_src.join("file1.dat"), b"data1").await.unwrap();
+        fs::write(folder_src.join("subfolder/file2.dat"), b"data2").await.unwrap();
+
+        move_file_or_dir(&folder_src, &folder_dst).await.unwrap();
+        assert!(!folder_src.exists());
+        assert!(folder_dst.exists());
+        assert_eq!(fs::read(folder_dst.join("file1.dat")).await.unwrap(), b"data1");
+        assert_eq!(fs::read(folder_dst.join("subfolder/file2.dat")).await.unwrap(), b"data2");
+
         let _ = fs::remove_dir_all(temp_dir).await;
     }
 }

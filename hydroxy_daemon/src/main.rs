@@ -349,11 +349,23 @@ async fn run_daemon() {
     }
 
     info!(target: "major", "Peer Listen Port: {}", config.network_config.listen_port);
-    info!(target: "major", "Watch Dir: {}", config.storage_config.watch_directory);
-    info!(target: "major", "Download Dir: {}", config.storage_config.download_directory);
-
-    let _ = std::fs::create_dir_all(&config.storage_config.watch_directory);
-    let _ = std::fs::create_dir_all(&config.storage_config.download_directory);
+    for storage in &config.storage_config {
+        info!(
+            target: "major",
+            "Storage Target [{}]: Watch='{}', Downloads='{}', Temp='{}'",
+            storage.name,
+            storage.watch_directory,
+            storage.download_directory,
+            storage.temp_directory.as_deref().unwrap_or("<none>")
+        );
+        let _ = std::fs::create_dir_all(&storage.watch_directory);
+        let _ = std::fs::create_dir_all(&storage.download_directory);
+        if let Some(ref temp_dir) = storage.temp_directory {
+            if !temp_dir.trim().is_empty() {
+                let _ = std::fs::create_dir_all(temp_dir);
+            }
+        }
+    }
 
     // Spawn Engine in its own task
     let engine_stats_registry = Arc::clone(&stats_registry);
@@ -384,14 +396,8 @@ async fn run_daemon() {
                     let addr = remote_cfg.listen_address;
                     let port = remote_cfg.listen_port;
 
-                    if let Err(e) = start_server(
-                        &addr,
-                        &port,
-                        remote_cfg,
-                        server_stats,
-                        server_controls,
-                    )
-                    .await
+                    if let Err(e) =
+                        start_server(&addr, &port, remote_cfg, server_stats, server_controls).await
                     {
                         error!(target: "major", "RPC server error: {}", e);
                         std::process::exit(1);

@@ -15,7 +15,7 @@ use hydroxy_storage_io::{file_region::FileRegion, piece_io::PieceIO};
 use hydroxy_tracker::Peer;
 use tokio::{
     net::{tcp::OwnedReadHalf, TcpStream},
-    sync::{broadcast, mpsc, Mutex},
+    sync::{broadcast, mpsc, Mutex, RwLock},
 };
 use tracing::{info, warn};
 
@@ -90,7 +90,7 @@ pub struct PeerWorker {
     pub total_torrent_size: u64,
     pub piece_length: u32,
     pub piece_hashes: Arc<Vec<u8>>,
-    pub file_map: Arc<Vec<FileRegion>>,
+    pub file_map: Arc<RwLock<Vec<FileRegion>>>,
     pub torrent_state: Arc<Mutex<TorrentState>>,
     pub pending_requests: u32,
     pub current_piece: Option<u32>,
@@ -660,13 +660,16 @@ impl PeerWorker {
                     self.failed_pieces.remove(&index);
 
                     // write to disk without cloning FileRegion vector
-                    PieceIO::write_piece_to_disk(
-                        &self.file_map,
-                        index,
-                        self.piece_length,
-                        &assembled,
-                    )
-                    .await?;
+                    {
+                        let map = self.file_map.read().await;
+                        PieceIO::write_piece_to_disk(
+                            &*map,
+                            index,
+                            self.piece_length,
+                            &assembled,
+                        )
+                        .await?;
+                    }
                     drop(assembled);
 
                     info!("Piece {} written to disk", index);
@@ -730,15 +733,19 @@ impl PeerWorker {
                 };
 
                 if is_complete && !self.peer_state.am_choking {
-                    if let Ok(Some(block)) = PieceIO::read_block_from_disk(
-                        &self.file_map,
-                        index,
-                        begin,
-                        length,
-                        self.piece_length,
-                        self.total_torrent_size,
-                    )
-                    .await
+                    let block_opt = {
+                        let map = self.file_map.read().await;
+                        PieceIO::read_block_from_disk(
+                            &*map,
+                            index,
+                            begin,
+                            length,
+                            self.piece_length,
+                            self.total_torrent_size,
+                        )
+                        .await
+                    };
+                    if let Ok(Some(block)) = block_opt
                     {
                         let block_len = block.len() as u64;
                         if out_tx

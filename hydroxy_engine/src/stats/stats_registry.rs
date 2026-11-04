@@ -24,6 +24,7 @@ impl StatsRegistry {
         &self,
         info_hash: &str,
         name: &str,
+        storage: &str,
         category: &str,
         total_pieces: usize,
         piece_length: u32,
@@ -37,6 +38,7 @@ impl StatsRegistry {
                 TorrentStats::new(
                     info_hash.to_string(),
                     name.to_string(),
+                    storage.to_string(),
                     category.to_string(),
                     total_pieces,
                     piece_length,

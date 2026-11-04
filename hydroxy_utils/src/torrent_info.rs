@@ -5,7 +5,7 @@ use hydroxy_bencode::{
 use sha1::{Digest, Sha1};
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TorrentInfo {
     pub announce: String,
     pub announce_list: Vec<String>,
@@ -18,7 +18,7 @@ pub struct TorrentInfo {
     pub other_infos: OtherInfos,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Info {
     // this is name of the torrent.
     pub name: String,
@@ -34,14 +34,14 @@ pub struct Info {
     pub source: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct File {
     pub length: usize,
     pub path: Vec<String>,
     pub encoded_path: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OtherInfos {
     pub info_hash: [u8; 20],
     pub total_pieces: usize,

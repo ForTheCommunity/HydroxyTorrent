@@ -12,7 +12,7 @@ use hydroxy_utils::{
     get_peer_id,
     torrent_info::{OtherInfos, TorrentInfo},
 };
-use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
+use tokio::sync::{Mutex, RwLock, Semaphore, broadcast, mpsc};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
@@ -45,7 +45,9 @@ enum SpawnPeerOutcome {
 }
 
 pub struct TorrentTask {
-    pub root_dir: String,
+    pub storage: String,
+    pub final_dir: String,
+    pub temp_dir: Option<String>,
     pub info_hash: [u8; 20],
     pub category: String,
     pub stats_registry: Arc<StatsRegistry>,
@@ -71,14 +73,32 @@ impl TorrentTask {
 
         let mut hot_state = TorrentState::load_state(&info_hash_sha1, &torrent_info).await?;
 
+        // Determine active directory and if incomplete files reside in temp_dir
+        let (active_root_dir, mut is_in_temp) = match &self.temp_dir {
+            Some(temp) if !temp.trim().is_empty() => {
+                let temp_path = std::path::Path::new(temp).join(&torrent_info.info.name);
+                let final_path = std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
+
+                if temp_path.exists() {
+                    (temp.clone(), true)
+                } else if final_path.exists() {
+                    (self.final_dir.clone(), false)
+                } else {
+                    (temp.clone(), true)
+                }
+            }
+            _ => (self.final_dir.clone(), false),
+        };
+
         // filemap
-        let file_map = Arc::new(FileRegion::build_file_map(&torrent_info, &self.root_dir));
-        let total_torrent_size: u64 = file_map.iter().map(|r| r.length).sum();
+        let initial_file_map = FileRegion::build_file_map(&torrent_info, &active_root_dir);
+        let total_torrent_size: u64 = initial_file_map.iter().map(|r| r.length).sum();
+        let file_map = Arc::new(RwLock::new(initial_file_map));
         let total_pieces = torrent_info.info.pieces.len() / 20;
         let piece_length = torrent_info.info.piece_length as u32;
-        let torrent_name = torrent_info.info.name;
-        let torrent_announce = torrent_info.announce;
-        let piece_hashes = Arc::new(torrent_info.info.pieces);
+        let torrent_name = torrent_info.info.name.clone();
+        let torrent_announce = torrent_info.announce.clone();
+        let piece_hashes = Arc::new(torrent_info.info.pieces.clone());
 
         let mut trackers = Vec::new();
         let mut seen_trackers = HashSet::new();
@@ -105,37 +125,40 @@ impl TorrentTask {
             })
             .collect();
 
-        let root_dir_prefix = format!("{}/", self.root_dir.trim_end_matches('/'));
-        let file_stats: Vec<TorrentFileStats> = file_map
-            .iter()
-            .enumerate()
-            .map(|(i, region)| {
-                let name = std::path::Path::new(&region.path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| format!("file_{}", i));
-                let rel_path = region
-                    .path
-                    .strip_prefix(&root_dir_prefix)
-                    .or_else(|| region.path.strip_prefix(&self.root_dir))
-                    .unwrap_or(&region.path)
-                    .trim_start_matches('/')
-                    .to_string();
-                TorrentFileStats {
-                    id: i,
-                    name,
-                    path: rel_path,
-                    size: region.length,
-                    offset: region.offset_in_torrent,
-                    progress: 0.0,
-                    priority: "Normal".to_string(),
-                }
-            })
-            .collect();
+        let file_stats: Vec<TorrentFileStats> = {
+            let map = file_map.read().await;
+            let root_dir_prefix = format!("{}/", active_root_dir.trim_end_matches('/'));
+            map.iter()
+                .enumerate()
+                .map(|(i, region)| {
+                    let name = std::path::Path::new(&region.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| format!("file_{}", i));
+                    let rel_path = region
+                        .path
+                        .strip_prefix(&root_dir_prefix)
+                        .or_else(|| region.path.strip_prefix(&active_root_dir))
+                        .unwrap_or(&region.path)
+                        .trim_start_matches('/')
+                        .to_string();
+                    TorrentFileStats {
+                        id: i,
+                        name,
+                        path: rel_path,
+                        size: region.length,
+                        offset: region.offset_in_torrent,
+                        progress: 0.0,
+                        priority: "Normal".to_string(),
+                    }
+                })
+                .collect()
+        };
 
         self.stats_registry.register_torrent(
             &info_hash_sha1,
             &torrent_name,
+            &self.storage,
             &self.category,
             total_pieces,
             piece_length,
@@ -143,22 +166,26 @@ impl TorrentTask {
             tracker_stats,
             file_stats,
         );
-        drop(torrent_name);
 
-        let any_file_exists = file_map.iter().any(|r| std::path::Path::new(&r.path).exists());
+        let any_file_exists = {
+            let map = file_map.read().await;
+            map.iter().any(|r| std::path::Path::new(&r.path).exists())
+        };
         let has_saved_pieces = hot_state.pieces.iter().any(|&b| b != 0);
 
         // When a new torrent is added (or state had no verified pieces) and files exist on disk, recheck them
         if any_file_exists && !has_saved_pieces {
             self.stats_registry.set_status(&info_hash_sha1, Some("checking".to_string()));
+            let map_guard = file_map.read().await;
             let recheck = crate::piece_verifier::verify_torrent_data_on_disk(
-                &file_map,
+                &*map_guard,
                 &piece_hashes,
                 piece_length,
                 total_torrent_size,
                 total_pieces,
             )
             .await;
+            drop(map_guard);
 
             hot_state.pieces = recheck.bitfield;
             hot_state.total_downloaded = recheck.completed_bytes;
@@ -212,6 +239,31 @@ impl TorrentTask {
         self.stats_registry.set_sequential(&info_hash_sha1, is_sequential);
 
         let all_done = piece_allocator.lock().await.all_complete();
+        if all_done && is_in_temp {
+            if let Some(ref temp) = self.temp_dir {
+                let src = std::path::Path::new(temp).join(&torrent_info.info.name);
+                let dst = std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
+                info!(
+                    target: "major",
+                    "Completed torrent detected in temp directory. Moving '{}' to '{}'...",
+                    src.display(),
+                    dst.display()
+                );
+                let mut map_guard = file_map.write().await;
+                if let Err(e) = hydroxy_storage_io::move_file_or_dir(&src, &dst).await {
+                    warn!("Failed to move completed torrent to final directory: {}", e);
+                } else {
+                    *map_guard = FileRegion::build_file_map(&torrent_info, &self.final_dir);
+                    is_in_temp = false;
+                    info!(
+                        target: "major",
+                        "Successfully moved completed torrent '{}' to final directory '{}'",
+                        torrent_info.info.name,
+                        self.final_dir
+                    );
+                }
+            }
+        }
         let mut has_download_slot = false;
         let is_active_for_announce = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -405,10 +457,57 @@ impl TorrentTask {
         let mut is_stalled = false;
         let mut stall_check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
         stall_check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut task_have_rx = have_tx.subscribe();
 
         // Main supervision loop: watch for commands, finished workers & new peers
         loop {
             tokio::select! {
+                Ok(_) = task_have_rx.recv() => {
+                    if piece_allocator.lock().await.all_complete() {
+                        if is_in_temp {
+                            if let Some(ref temp) = self.temp_dir {
+                                let src = std::path::Path::new(temp).join(&torrent_info.info.name);
+                                let dst = std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
+                                info!(
+                                    target: "major",
+                                    "Download complete! Moving '{}' from '{}' to '{}'...",
+                                    torrent_info.info.name,
+                                    src.display(),
+                                    dst.display()
+                                );
+                                let mut map_guard = file_map.write().await;
+                                if let Err(e) = hydroxy_storage_io::move_file_or_dir(&src, &dst).await {
+                                    warn!("Failed to move completed torrent to final directory: {}", e);
+                                } else {
+                                    *map_guard = FileRegion::build_file_map(&torrent_info, &self.final_dir);
+                                    is_in_temp = false;
+                                    info!(
+                                        target: "major",
+                                        "Successfully moved completed torrent '{}' to final directory '{}'",
+                                        torrent_info.info.name,
+                                        self.final_dir
+                                    );
+                                }
+                            }
+                        }
+                        if has_download_slot {
+                            has_download_slot = false;
+                            is_stalled = false;
+                            zero_speed_since = None;
+                            self.queue_manager.release_download_slot(&info_hash).await;
+                        }
+                        self.stats_registry.set_initial_progress(&info_hash_sha1, total_pieces, total_torrent_size);
+                        let current_status = self.stats_registry.snapshot_torrent(&info_hash_sha1).and_then(|s| s.custom_status);
+                        if current_status.as_deref() != Some("seeding") {
+                            info!(
+                                target: "major",
+                                "Torrent download complete — now seeding ({})",
+                                info_hash_sha1
+                            );
+                            self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
+                        }
+                    }
+                }
                 _ = stall_check_interval.tick() => {
                     // Periodically persist updated uploaded/downloaded byte totals to .hot_state (especially while seeding)
                     if let Some(snap) = self.stats_registry.snapshot_torrent(&info_hash_sha1) {
@@ -675,13 +774,16 @@ impl TorrentTask {
                             self.stats_registry.clear_peers(&info_hash_sha1);
                             self.stats_registry.set_status(&info_hash_sha1, Some("checking".to_string()));
 
-                            let recheck = crate::piece_verifier::verify_torrent_data_on_disk(
-                                &file_map,
-                                &piece_hashes,
-                                piece_length,
-                                total_torrent_size,
-                                total_pieces,
-                            ).await;
+                            let recheck = {
+                                let map = file_map.read().await;
+                                crate::piece_verifier::verify_torrent_data_on_disk(
+                                    &*map,
+                                    &piece_hashes,
+                                    piece_length,
+                                    total_torrent_size,
+                                    total_pieces,
+                                ).await
+                            };
 
                             {
                                 let mut state = torrent_state.lock().await;
@@ -703,6 +805,32 @@ impl TorrentTask {
                             );
 
                             if recheck.completed_pieces == total_pieces {
+                                if is_in_temp {
+                                    if let Some(ref temp) = self.temp_dir {
+                                        let src = std::path::Path::new(temp).join(&torrent_info.info.name);
+                                        let dst = std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
+                                        info!(
+                                            target: "major",
+                                            "Recheck completed 100%. Moving '{}' from '{}' to '{}'...",
+                                            torrent_info.info.name,
+                                            src.display(),
+                                            dst.display()
+                                        );
+                                        let mut map_guard = file_map.write().await;
+                                        if let Err(e) = hydroxy_storage_io::move_file_or_dir(&src, &dst).await {
+                                            warn!("Failed to move completed torrent to final directory: {}", e);
+                                        } else {
+                                            *map_guard = FileRegion::build_file_map(&torrent_info, &self.final_dir);
+                                            is_in_temp = false;
+                                            info!(
+                                                target: "major",
+                                                "Successfully moved completed torrent '{}' to final directory '{}'",
+                                                torrent_info.info.name,
+                                                self.final_dir
+                                            );
+                                        }
+                                    }
+                                }
                                 if has_download_slot {
                                     has_download_slot = false;
                                     self.queue_manager.release_download_slot(&info_hash).await;
@@ -1037,6 +1165,32 @@ impl TorrentTask {
 
                     // Check if all pieces are complete
                     if piece_allocator.lock().await.all_complete() {
+                        if is_in_temp {
+                            if let Some(ref temp) = self.temp_dir {
+                                let src = std::path::Path::new(temp).join(&torrent_info.info.name);
+                                let dst = std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
+                                info!(
+                                    target: "major",
+                                    "Download complete! Moving '{}' from '{}' to '{}'...",
+                                    torrent_info.info.name,
+                                    src.display(),
+                                    dst.display()
+                                );
+                                let mut map_guard = file_map.write().await;
+                                if let Err(e) = hydroxy_storage_io::move_file_or_dir(&src, &dst).await {
+                                    warn!("Failed to move completed torrent to final directory: {}", e);
+                                } else {
+                                    *map_guard = FileRegion::build_file_map(&torrent_info, &self.final_dir);
+                                    is_in_temp = false;
+                                    info!(
+                                        target: "major",
+                                        "Successfully moved completed torrent '{}' to final directory '{}'",
+                                        torrent_info.info.name,
+                                        self.final_dir
+                                    );
+                                }
+                            }
+                        }
                         if has_download_slot {
                             has_download_slot = false;
                             is_stalled = false;
@@ -1257,7 +1411,7 @@ impl TorrentTask {
         total_torrent_size: u64,
         piece_hashes: &Arc<Vec<u8>>,
         piece_allocator: &Arc<Mutex<PieceAllocator>>,
-        file_map: &Arc<Vec<FileRegion>>,
+        file_map: &Arc<RwLock<Vec<FileRegion>>>,
         torrent_state: &Arc<Mutex<TorrentState>>,
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,
@@ -1364,7 +1518,7 @@ impl TorrentTask {
         total_torrent_size: u64,
         piece_hashes: &Arc<Vec<u8>>,
         piece_allocator: &Arc<Mutex<PieceAllocator>>,
-        file_map: &Arc<Vec<FileRegion>>,
+        file_map: &Arc<RwLock<Vec<FileRegion>>>,
         torrent_state: &Arc<Mutex<TorrentState>>,
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,

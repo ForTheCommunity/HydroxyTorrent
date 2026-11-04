@@ -1,5 +1,5 @@
 use directories::ProjectDirs;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs::{self};
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -16,12 +16,30 @@ pub struct GeneratedCredentials {
     pub password: String,
 }
 
+fn deserialize_storage_config<'de, D>(deserializer: D) -> Result<Vec<StorageConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(StorageConfig),
+        Many(Vec<StorageConfig>),
+    }
+
+    match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(item) => Ok(vec![item]),
+        OneOrMany::Many(items) => Ok(items),
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HydroxyConfig {
     pub network_config: NetworkConfig,
     #[serde(default, alias = "Limitations", alias = "limitations")]
     pub session_config: SessionConfig,
-    pub storage_config: StorageConfig,
+    #[serde(deserialize_with = "deserialize_storage_config")]
+    pub storage_config: Vec<StorageConfig>,
     pub remote_config: RemoteConfig,
     #[serde(skip)]
     pub newly_generated_credentials: Option<GeneratedCredentials>,
@@ -86,10 +104,18 @@ impl Default for SessionConfig {
     }
 }
 
+fn default_storage_name() -> String {
+    "default".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
+    #[serde(default = "default_storage_name")]
+    pub name: String,
     pub watch_directory: String,
     pub download_directory: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_directory: Option<String>,
     #[serde(default)]
     pub reflection: bool,
     #[serde(default = "default_watch_directory_max_depth")]
@@ -222,14 +248,24 @@ impl HydroxyConfig {
     /// Returns the effective max active downloads limit, respecting legacy `storage_config.max_active_downloads`
     /// if set while prioritizing `session_config.max_active_downloads`.
     pub fn effective_max_active_downloads(&self) -> usize {
-        if let Some(storage_limit) = self.storage_config.max_active_downloads {
-            if self.session_config.max_active_downloads == default_max_active_downloads()
-                && storage_limit != default_max_active_downloads()
-            {
-                return storage_limit;
+        for storage in &self.storage_config {
+            if let Some(storage_limit) = storage.max_active_downloads {
+                if self.session_config.max_active_downloads == default_max_active_downloads()
+                    && storage_limit != default_max_active_downloads()
+                {
+                    return storage_limit;
+                }
             }
         }
         self.session_config.max_active_downloads
+    }
+
+    pub fn get_storage(&self, name: &str) -> Option<&StorageConfig> {
+        self.storage_config.iter().find(|s| s.name == name)
+    }
+
+    pub fn default_storage(&self) -> Option<&StorageConfig> {
+        self.storage_config.first()
     }
 
     pub fn config_file_path() -> Result<PathBuf, ConfigError> {
@@ -315,7 +351,43 @@ password = "hashed_password"
         assert_eq!(config.session_config.max_active_uploads, 5);
         assert_eq!(config.session_config.max_peers_per_torrent, 50);
         assert_eq!(config.session_config.max_total_peers, 300);
-        assert_eq!(config.storage_config.watch_directory_max_depth, 2);
+        assert_eq!(config.storage_config[0].watch_directory_max_depth, 2);
+        assert_eq!(config.storage_config[0].name, "default");
+    }
+
+    #[test]
+    fn test_deserialize_multiple_storage_configs() {
+        let toml_str = r#"
+[network_config]
+listen_address = "0.0.0.0"
+listen_port = 9999
+
+[[storage_config]]
+name = "ssd"
+watch_directory = "/mnt/nvme/watch"
+download_directory = "/mnt/nvme/downloads"
+temp_directory = "/mnt/nvme/incomplete"
+
+[[storage_config]]
+name = "hdd"
+watch_directory = "/mnt/hdd/watch"
+download_directory = "/mnt/hdd/downloads"
+
+[remote_config]
+rpc_enabled = true
+web_ui_enabled = false
+listen_address = "127.0.0.1"
+listen_port = 10000
+username = "admin"
+password = "hashed_password"
+"#;
+        let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize multiple storages");
+        assert_eq!(config.storage_config.len(), 2);
+        assert_eq!(config.storage_config[0].name, "ssd");
+        assert_eq!(config.storage_config[0].temp_directory.as_deref(), Some("/mnt/nvme/incomplete"));
+        assert_eq!(config.storage_config[1].name, "hdd");
+        assert_eq!(config.storage_config[1].temp_directory, None);
+        assert_eq!(config.get_storage("hdd").unwrap().download_directory, "/mnt/hdd/downloads");
     }
 
     #[test]

@@ -59,118 +59,137 @@ impl Manager {
                 }
             };
 
-            let watch_dir = if std::fs::create_dir_all(&config.storage_config.watch_directory).is_ok() {
-                config.storage_config.watch_directory.clone()
-            } else {
-                let local = "dottorrents".to_string();
-                let _ = std::fs::create_dir_all(&local);
-                local
-            };
-
-            let download_dir = if std::fs::create_dir_all(&config.storage_config.download_directory).is_ok() {
-                config.storage_config.download_directory.clone()
-            } else {
-                let local = "downloads".to_string();
-                let _ = std::fs::create_dir_all(&local);
-                local
-            };
-
-            let max_depth = if config.storage_config.watch_directory_max_depth == 0 {
-                3
-            } else {
-                config.storage_config.watch_directory_max_depth
-            };
-
-            let torrents_dir_paths =
-                match TorrentDirData::scan_paths(&watch_dir, &download_dir, max_depth).await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        warn!("Failed to scan watch directory '{}': {}", watch_dir, e);
-                        continue;
-                    }
-                };
-
             queue_manager
                 .set_max_active(config.effective_max_active_downloads())
                 .await;
 
             let mut seen_paths: HashSet<PathBuf> = HashSet::new();
 
-            for torrent_dir in torrents_dir_paths {
-                for entry in torrent_dir.torrent_entries {
-                    seen_paths.insert(entry.path.clone());
+            for storage in &config.storage_config {
+                let watch_dir = if std::fs::create_dir_all(&storage.watch_directory).is_ok() {
+                    storage.watch_directory.clone()
+                } else {
+                    let local = format!("dottorrents_{}", storage.name);
+                    let _ = std::fs::create_dir_all(&local);
+                    local
+                };
 
-                    if let Some((cached_mtime, cached_hash)) = known_files.get(&entry.path) {
-                        if *cached_mtime == entry.modified
-                            && active_torrents.lock().await.contains(cached_hash)
-                        {
-                            continue;
-                        }
-                    }
+                let download_dir = if std::fs::create_dir_all(&storage.download_directory).is_ok() {
+                    storage.download_directory.clone()
+                } else {
+                    let local = format!("downloads_{}", storage.name);
+                    let _ = std::fs::create_dir_all(&local);
+                    local
+                };
 
-                    let raw_bytes = match tokio::fs::read(&entry.path).await {
-                        Ok(b) => b,
+                let max_depth = if storage.watch_directory_max_depth == 0 {
+                    3
+                } else {
+                    storage.watch_directory_max_depth
+                };
+
+                let torrents_dir_paths =
+                    match TorrentDirData::scan_paths(&watch_dir, &download_dir, max_depth).await {
+                        Ok(data) => data,
                         Err(e) => {
-                            warn!("Failed to read torrent file {:?}: {}", entry.path, e);
+                            warn!("Failed to scan watch directory '{}' [storage: {}]: {}", watch_dir, storage.name, e);
                             continue;
                         }
                     };
 
-                    let root_dir = if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
-                        download_dir.clone()
-                    } else {
-                        format!("{}/{}", &download_dir, &torrent_dir.dir_name)
-                    };
+                let temp_base_dir: Option<String> = storage
+                    .temp_directory
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
 
-                    let torrent_info = match TorrentInfo::parse_torrent_file(raw_bytes) {
-                        Ok(info) => info,
-                        Err(e) => {
-                            warn!("Failed to parse torrent file in {}: {}", torrent_dir.dir_name, e);
-                            continue;
+                for torrent_dir in torrents_dir_paths {
+                    for entry in torrent_dir.torrent_entries {
+                        seen_paths.insert(entry.path.clone());
+
+                        if let Some((cached_mtime, cached_hash)) = known_files.get(&entry.path) {
+                            if *cached_mtime == entry.modified
+                                && active_torrents.lock().await.contains(cached_hash)
+                            {
+                                continue;
+                            }
                         }
-                    };
 
-                    let info_hash = torrent_info.other_infos.info_hash;
-                    known_files.insert(entry.path, (entry.modified, info_hash));
+                        let raw_bytes = match tokio::fs::read(&entry.path).await {
+                            Ok(b) => b,
+                            Err(e) => {
+                                warn!("Failed to read torrent file {:?}: {}", entry.path, e);
+                                continue;
+                            }
+                        };
 
-                    let mut active = active_torrents.lock().await;
-                    if active.contains(&info_hash) {
-                        continue; // Already has a running TorrentTask
+                        let final_dir = if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
+                            download_dir.clone()
+                        } else {
+                            format!("{}/{}", &download_dir, &torrent_dir.dir_name)
+                        };
+
+                        let temp_dir = temp_base_dir.as_ref().map(|base| {
+                            if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
+                                base.clone()
+                            } else {
+                                format!("{}/{}", base, &torrent_dir.dir_name)
+                            }
+                        });
+
+                        let torrent_info = match TorrentInfo::parse_torrent_file(raw_bytes) {
+                            Ok(info) => info,
+                            Err(e) => {
+                                warn!("Failed to parse torrent file in {}: {}", torrent_dir.dir_name, e);
+                                continue;
+                            }
+                        };
+
+                        let info_hash = torrent_info.other_infos.info_hash;
+                        known_files.insert(entry.path, (entry.modified, info_hash));
+
+                        let mut active = active_torrents.lock().await;
+                        if active.contains(&info_hash) {
+                            continue; // Already has a running TorrentTask
+                        }
+                        active.insert(info_hash);
+                        drop(active);
+
+                        let info_hash_sha1 = hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash);
+                        info!(
+                            target: "major",
+                            "Torrent found in watch dir: '{}' ({}) [storage: '{}', category: '{}']",
+                            torrent_info.info.name,
+                            info_hash_sha1,
+                            storage.name,
+                            if torrent_dir.dir_name.is_empty() { "default" } else { &torrent_dir.dir_name }
+                        );
+
+                        let category = torrent_dir.dir_name.clone();
+
+                        let torrent_task = TorrentTask {
+                            info_hash,
+                            storage: storage.name.clone(),
+                            final_dir,
+                            temp_dir,
+                            category,
+                            stats_registry: stats_registry.clone(),
+                            control_registry: control_registry.clone(),
+                            listen_port,
+                            inbound_registry: inbound_registry.clone(),
+                            queue_manager: queue_manager.clone(),
+                        };
+
+                        let active_torrents_ref = active_torrents.clone();
+                        // Spawning a torrent task for each newly detected torrent
+                        tokio::spawn(async move {
+                            let res = torrent_task.start(torrent_info).await;
+                            if let Err(e) = res {
+                                warn!(target: "major", "Torrent task failed: {}", e);
+                            }
+                            active_torrents_ref.lock().await.remove(&info_hash);
+                        });
                     }
-                    active.insert(info_hash);
-                    drop(active);
-
-                    let info_hash_sha1 = hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash);
-                    info!(
-                        target: "major",
-                        "Torrent found in watch dir: '{}' ({}) [category: '{}']",
-                        torrent_info.info.name,
-                        info_hash_sha1,
-                        if torrent_dir.dir_name.is_empty() { "default" } else { &torrent_dir.dir_name }
-                    );
-
-                    let category = torrent_dir.dir_name.clone();
-
-                    let torrent_task = TorrentTask {
-                        info_hash,
-                        root_dir,
-                        category,
-                        stats_registry: stats_registry.clone(),
-                        control_registry: control_registry.clone(),
-                        listen_port,
-                        inbound_registry: inbound_registry.clone(),
-                        queue_manager: queue_manager.clone(),
-                    };
-
-                    let active_torrents_ref = active_torrents.clone();
-                    // Spawning a torrent task for each newly detected torrent
-                    tokio::spawn(async move {
-                        let res = torrent_task.start(torrent_info).await;
-                        if let Err(e) = res {
-                            warn!(target: "major", "Torrent task failed: {}", e);
-                        }
-                        active_torrents_ref.lock().await.remove(&info_hash);
-                    });
                 }
             }
 

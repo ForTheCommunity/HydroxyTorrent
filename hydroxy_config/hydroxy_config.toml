@@ -15,11 +15,21 @@ listen_port = 9999
 # <Watch Directory>/DebianOS/debian_11.iso.torrent => <Download Directory>/DebianOS/debian_11.iso
 # Note : dot torrent files inside watch_directory will be ignored.
 # it should be inside some folder/category (like Ubuntu or Debian).
-[storage_config]
+# Storage Configuration
+# You can define one or more [[storage_config]] sections to store files across multiple disks.
+# Each storage location has its own watch directory, download directory, and optional temp directory.
+
+[[storage_config]]
+# Unique name identifying this storage target (e.g. "default", "nvme", "hdd_movies")
+name = "default"
 # App will scan Watch Directory for dot torrent files.
 watch_directory = "/home/user_1/temp/hydroxy/dottorrents"
-# Path while app will save downloaded files.
+# Path where app will save downloaded files.
 download_directory = "/home/user_1/temp/hydroxy/downloads"
+# Optional temporary directory for saving incomplete torrents while downloading.
+# Upon 100% download and verification, files are automatically moved to download_directory.
+# If omitted or empty, torrents download directly into download_directory.
+# temp_directory = "/home/user_1/temp/hydroxy/incomplete"
 # Reflection means when you delete dot torrent file from
 # watch directory downloaded torrent will also be deleted.
 # it is disabled by default.
@@ -27,6 +37,15 @@ reflection = false
 # Maximum depth of subdirectories to scan in watch directory for categories (default 3)
 # e.g., 1 = category, 2 = category/subcategory, 3 = category/subcategory/collection
 watch_directory_max_depth = 3
+
+# Example additional storage on a second hard drive:
+# [[storage_config]]
+# name = "secondary_hdd"
+# watch_directory = "/mnt/hdd2/torrents/watch"
+# download_directory = "/mnt/hdd2/torrents/downloads"
+# temp_directory = "/mnt/hdd2/torrents/incomplete"
+# reflection = false
+# watch_directory_max_depth = 3
 
 
 # Note : RPC must be enabled for making any remote connection
