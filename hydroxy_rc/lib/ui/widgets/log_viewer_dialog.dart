@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
+import 'package:hydroxy_rc/themes/app_theme.dart';
 
 enum LogLevel { all, error, warn, info, debug, trace, normal }
 
@@ -15,11 +16,7 @@ class _LogLine {
   final String text;
   final LogLevel level;
 
-  _LogLine({
-    required this.number,
-    required this.text,
-    required this.level,
-  });
+  _LogLine({required this.number, required this.text, required this.level});
 
   static LogLevel detectLevel(String text) {
     final upper = text.toUpperCase();
@@ -226,10 +223,7 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             }
           }
           if (_minorLines.length > _maxLiveMinorLines) {
-            _minorLines.removeRange(
-              0,
-              _minorLines.length - _maxLiveMinorLines,
-            );
+            _minorLines.removeRange(0, _minorLines.length - _maxLiveMinorLines);
           }
         });
 
@@ -267,13 +261,13 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
     }).toList();
   }
 
-  List<TextSpan> _buildLineSpans(_LogLine line, int padWidth) {
+  List<TextSpan> _buildLineSpans(AppTheme colors, _LogLine line, int padWidth) {
     final spans = <TextSpan>[
       // Line number gutter
       TextSpan(
         text: '${line.number.toString().padLeft(padWidth)} | ',
-        style: const TextStyle(
-          color: Color(0xFF6E7681),
+        style: TextStyle(
+          color: colors.tableSecondaryTextColor.withValues(alpha: 0.6),
           fontFamily: 'monospace',
           fontSize: 12,
         ),
@@ -287,29 +281,29 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
     final Color messageColor;
     switch (level) {
       case LogLevel.error:
-        badgeColor = const Color(0xFFFF5555);
-        messageColor = const Color(0xFFFF7B72);
+        badgeColor = colors.accentRedColor;
+        messageColor = colors.accentRedColor;
         break;
       case LogLevel.warn:
-        badgeColor = const Color(0xFFFFCC00);
-        messageColor = const Color(0xFFE3B341);
+        badgeColor = colors.accentAmberColor;
+        messageColor = colors.accentAmberColor;
         break;
       case LogLevel.info:
-        badgeColor = const Color(0xFF56D364);
-        messageColor = const Color(0xFF85E89D);
+        badgeColor = colors.accentGreenColor;
+        messageColor = colors.tablePrimaryTextColor;
         break;
       case LogLevel.debug:
-        badgeColor = const Color(0xFF58A6FF);
-        messageColor = const Color(0xFF79C0FF);
+        badgeColor = colors.accentBlueColor;
+        messageColor = colors.tablePrimaryTextColor;
         break;
       case LogLevel.trace:
-        badgeColor = const Color(0xFFBC8CFF);
-        messageColor = const Color(0xFFD2A8FF);
+        badgeColor = colors.accentPurpleColor;
+        messageColor = colors.tableSecondaryTextColor;
         break;
       case LogLevel.normal:
       case LogLevel.all:
-        badgeColor = const Color(0xFFC9D1D9);
-        messageColor = const Color(0xFFC9D1D9);
+        badgeColor = colors.tablePrimaryTextColor;
+        messageColor = colors.tablePrimaryTextColor;
         break;
     }
 
@@ -342,8 +336,8 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
         spans.add(
           TextSpan(
             text: before,
-            style: const TextStyle(
-              color: Color(0xFF8B949E),
+            style: TextStyle(
+              color: colors.tableSecondaryTextColor,
               fontFamily: 'monospace',
               fontSize: 12,
             ),
@@ -399,23 +393,22 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
     final maxLineNumber = activeLines.isEmpty ? 1 : activeLines.last.number;
     final padWidth = math.max(2, maxLineNumber.toString().length);
 
-    final errorCount =
-        activeLines.where((l) => l.level == LogLevel.error).length;
-    final warnCount =
-        activeLines.where((l) => l.level == LogLevel.warn).length;
-    final infoCount =
-        activeLines.where((l) => l.level == LogLevel.info).length;
+    final errorCount = activeLines
+        .where((l) => l.level == LogLevel.error)
+        .length;
+    final warnCount = activeLines.where((l) => l.level == LogLevel.warn).length;
+    final infoCount = activeLines.where((l) => l.level == LogLevel.info).length;
 
     final isMinor = _selectedCategory == LogCategory.minor;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1117),
+      backgroundColor: colors.scaffoldBackgroundColor,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF161B22),
+        backgroundColor: colors.titleBarBackgroundColor,
         elevation: 0,
         titleSpacing: 0,
         leading: IconButton(
-          icon: const Icon(Icons.close_rounded, color: Colors.white),
+          icon: Icon(Icons.close_rounded, color: colors.titleBarIconColor),
           tooltip: 'Close Logs',
           onPressed: () => Navigator.of(context).pop(),
         ),
@@ -424,60 +417,31 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
           children: [
             Icon(
               isMinor ? Icons.sensors_rounded : Icons.terminal_rounded,
-              color: isMinor
-                  ? const Color(0xFF58A6FF)
-                  : const Color(0xFF56D364),
+              color: isMinor ? colors.accentBlueColor : colors.accentGreenColor,
               size: 18,
             ),
             const SizedBox(width: 6),
-            const Text(
+            Text(
               'Daemon Logs',
               style: TextStyle(
-                color: Colors.white,
+                color: colors.titleBarTextColor,
                 fontWeight: FontWeight.bold,
                 fontSize: 15,
               ),
             ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: const Color(0xFF21262D),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFF30363D), width: 0.8),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    isMinor
-                        ? Icons.fiber_manual_record
-                        : Icons.save_outlined,
-                    size: 8,
-                    color: isMinor
-                        ? const Color(0xFF58A6FF)
-                        : const Color(0xFF56D364),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    isMinor ? 'Live Logs' : 'Saved Logs',
-                    style: const TextStyle(color: Colors.white70, fontSize: 9.5),
-                  ),
-                ],
-              ),
-            ),
           ],
         ),
+
         actions: [
           if (isMinor && _minorLines.isNotEmpty)
             IconButton(
               tooltip: 'Clear Live Minor Logs',
               visualDensity: VisualDensity.compact,
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              icon: const Icon(
+              icon: Icon(
                 Icons.delete_sweep_rounded,
                 size: 20,
-                color: Colors.white70,
+                color: colors.titleBarIconColor,
               ),
               onPressed: () {
                 setState(() {
@@ -497,8 +461,9 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                   ? Icons.search_off_rounded
                   : Icons.search_rounded,
               size: 20,
-              color:
-                  _isSearchVisible ? const Color(0xFF56D364) : Colors.white70,
+              color: _isSearchVisible
+                  ? colors.titleBarLogoColor
+                  : colors.titleBarIconColor,
             ),
             onPressed: () {
               setState(() {
@@ -521,7 +486,9 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                   ? Icons.vertical_align_bottom_rounded
                   : Icons.pause_rounded,
               size: 20,
-              color: _autoScroll ? const Color(0xFF56D364) : Colors.white38,
+              color: _autoScroll
+                  ? colors.accentGreenColor
+                  : colors.tableSecondaryTextColor.withValues(alpha: 0.5),
             ),
             onPressed: () {
               setState(() {
@@ -535,10 +502,10 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             tooltip: 'Copy all logs',
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 6),
-            icon: const Icon(
+            icon: Icon(
               Icons.copy_rounded,
               size: 18,
-              color: Colors.white70,
+              color: colors.titleBarIconColor,
             ),
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _activeRawText));
@@ -567,28 +534,30 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
           children: [
             // Log Type Selector Bar (Major Events vs Minor Events)
             Container(
-              color: const Color(0xFF161B22),
+              color: colors.titleBarBackgroundColor,
               padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
               child: Row(
                 children: [
                   Expanded(
                     child: _buildCategoryTab(
-                      title: 'Major Events (Saved)',
+                      colors: colors,
+                      title: 'Major Events',
                       subtitle: 'Torrent added, found, completed, removed',
                       icon: Icons.event_note_rounded,
                       category: LogCategory.major,
-                      activeColor: const Color(0xFF56D364),
+                      activeColor: colors.accentGreenColor,
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: _buildCategoryTab(
-                      title: 'Minor Events (Live Broadcast)',
+                      colors: colors,
+                      title: 'Minor Events (Live)',
                       subtitle:
                           'Piece I/O, tracker announce, PEX, peer timeouts',
                       icon: Icons.sensors_rounded,
                       category: LogCategory.minor,
-                      activeColor: const Color(0xFF58A6FF),
+                      activeColor: colors.accentBlueColor,
                     ),
                   ),
                 ],
@@ -598,34 +567,39 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             // Search Bar if open
             if (_isSearchVisible)
               Container(
-                color: const Color(0xFF161B22),
+                color: colors.titleBarBackgroundColor,
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                 child: SizedBox(
                   height: 36,
                   child: TextField(
                     controller: _searchController,
                     autofocus: true,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    style: TextStyle(
+                      color: colors.searchBarTextColor,
+                      fontSize: 13,
+                    ),
                     decoration: InputDecoration(
                       hintText: 'Filter log output...',
-                      hintStyle:
-                          const TextStyle(color: Colors.white38, fontSize: 13),
+                      hintStyle: TextStyle(
+                        color: colors.searchBarHintColor,
+                        fontSize: 13,
+                      ),
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 10,
                         vertical: 0,
                       ),
                       isDense: true,
-                      prefixIcon: const Icon(
+                      prefixIcon: Icon(
                         Icons.search,
                         size: 16,
-                        color: Colors.white54,
+                        color: colors.searchBarIconColor,
                       ),
                       suffixIcon: _searchQuery.isNotEmpty
                           ? IconButton(
-                              icon: const Icon(
+                              icon: Icon(
                                 Icons.clear,
                                 size: 16,
-                                color: Colors.white54,
+                                color: colors.searchBarIconColor,
                               ),
                               onPressed: () {
                                 _searchController.clear();
@@ -634,21 +608,24 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                             )
                           : null,
                       filled: true,
-                      fillColor: const Color(0xFF0D1117),
+                      fillColor: colors.searchBarBackgroundColor,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
-                        borderSide:
-                            const BorderSide(color: Color(0xFF30363D)),
+                        borderSide: BorderSide(
+                          color: colors.searchBarBorderColor,
+                        ),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
-                        borderSide:
-                            const BorderSide(color: Color(0xFF30363D)),
+                        borderSide: BorderSide(
+                          color: colors.searchBarBorderColor,
+                        ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
-                        borderSide:
-                            const BorderSide(color: Color(0xFF56D364)),
+                        borderSide: BorderSide(
+                          color: colors.searchBarActiveBorderColor,
+                        ),
                       ),
                     ),
                     onChanged: (val) {
@@ -661,115 +638,117 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             // Level Filter Chips Row
             Container(
               height: 38,
-              color: const Color(0xFF161B22),
+              color: colors.titleBarBackgroundColor,
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
                   _buildFilterChip(
+                    colors,
                     'All (${activeLines.length})',
                     LogLevel.all,
-                    const Color(0xFF58A6FF),
+                    colors.accentBlueColor,
                   ),
                   const SizedBox(width: 6),
                   _buildFilterChip(
+                    colors,
                     'Error ($errorCount)',
                     LogLevel.error,
-                    const Color(0xFFFF5555),
+                    colors.accentRedColor,
                   ),
                   const SizedBox(width: 6),
                   _buildFilterChip(
+                    colors,
                     'Warn ($warnCount)',
                     LogLevel.warn,
-                    const Color(0xFFFFCC00),
+                    colors.accentAmberColor,
                   ),
                   const SizedBox(width: 6),
                   _buildFilterChip(
+                    colors,
                     'Info ($infoCount)',
                     LogLevel.info,
-                    const Color(0xFF56D364),
+                    colors.accentGreenColor,
                   ),
                 ],
               ),
             ),
-            const Divider(color: Color(0xFF30363D), height: 1),
+            Divider(color: colors.dividerColor, height: 1),
 
             // Main Log Terminal
             Expanded(
               child: (_selectedCategory == LogCategory.major && _isLoadingMajor)
-                  ? const Center(
+                  ? Center(
                       child: SizedBox(
                         width: 28,
                         height: 28,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          color: Color(0xFF56D364),
+                          color: colors.accentGreenColor,
                         ),
                       ),
                     )
                   : filteredLines.isEmpty
-                      ? Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  isMinor
-                                      ? Icons.sensors_rounded
-                                      : Icons.event_note_rounded,
-                                  size: 32,
-                                  color: const Color(0xFF484F58),
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  _searchQuery.isNotEmpty ||
-                                          _selectedLevelFilter != LogLevel.all
-                                      ? 'No logs match current filter.'
-                                      : isMinor
-                                          ? 'Listening for live minor events...\n(Events are broadcast live while watching and are never saved to disk or memory.)'
-                                          : 'No major logs recorded yet.',
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                    color: Color(0xFF6E7681),
-                                    fontSize: 13,
-                                    height: 1.5,
-                                  ),
-                                ),
-                              ],
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isMinor
+                                  ? Icons.sensors_rounded
+                                  : Icons.event_note_rounded,
+                              size: 32,
+                              color: colors.tableSecondaryTextColor,
                             ),
-                          ),
-                        )
-                      : Scrollbar(
-                          controller: _verticalController,
-                          thumbVisibility: true,
-                          child: Scrollbar(
-                            controller: _horizontalController,
-                            thumbVisibility: true,
-                            notificationPredicate: (n) => n.depth == 1,
-                            child: SingleChildScrollView(
-                              controller: _verticalController,
-                              padding: const EdgeInsets.all(12),
-                              child: SingleChildScrollView(
-                                controller: _horizontalController,
-                                scrollDirection: Axis.horizontal,
-                                child: SelectableText.rich(
-                                  TextSpan(
-                                    children: [
-                                      for (final line in filteredLines) ...[
-                                        ..._buildLineSpans(line, padWidth),
-                                        const TextSpan(text: '\n'),
-                                      ],
-                                    ],
-                                  ),
-                                  style: const TextStyle(
-                                    height: 1.45,
-                                  ),
-                                ),
+                            const SizedBox(height: 10),
+                            Text(
+                              _searchQuery.isNotEmpty ||
+                                      _selectedLevelFilter != LogLevel.all
+                                  ? 'No logs match current filter.'
+                                  : isMinor
+                                  ? 'Listening for live minor events...\n(Events are broadcast live while watching and are never saved to disk or memory.)'
+                                  : 'No major logs recorded yet.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: colors.tableSecondaryTextColor,
+                                fontSize: 13,
+                                height: 1.5,
                               ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : Scrollbar(
+                      controller: _verticalController,
+                      thumbVisibility: true,
+                      child: Scrollbar(
+                        controller: _horizontalController,
+                        thumbVisibility: true,
+                        notificationPredicate: (n) => n.depth == 1,
+                        child: SingleChildScrollView(
+                          controller: _verticalController,
+                          padding: const EdgeInsets.all(12),
+                          child: SingleChildScrollView(
+                            controller: _horizontalController,
+                            scrollDirection: Axis.horizontal,
+                            child: SelectableText.rich(
+                              TextSpan(
+                                children: [
+                                  for (final line in filteredLines) ...[
+                                    ..._buildLineSpans(colors, line, padWidth),
+                                    const TextSpan(text: '\n'),
+                                  ],
+                                ],
+                              ),
+                              style: const TextStyle(height: 1.45),
                             ),
                           ),
                         ),
+                      ),
+                    ),
             ),
           ],
         ),
@@ -778,6 +757,7 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
   }
 
   Widget _buildCategoryTab({
+    required AppTheme colors,
     required String title,
     required String subtitle,
     required IconData icon,
@@ -793,10 +773,10 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
         decoration: BoxDecoration(
           color: isSelected
               ? activeColor.withValues(alpha: 0.14)
-              : const Color(0xFF0D1117),
+              : colors.dataCardBackgroundColor,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: isSelected ? activeColor : const Color(0xFF30363D),
+            color: isSelected ? activeColor : colors.dataCardBorderColor,
             width: isSelected ? 1.2 : 0.8,
           ),
         ),
@@ -805,7 +785,7 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
             Icon(
               icon,
               size: 16,
-              color: isSelected ? activeColor : const Color(0xFF8B949E),
+              color: isSelected ? activeColor : colors.tableSecondaryTextColor,
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -818,18 +798,21 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: isSelected ? Colors.white : const Color(0xFFC9D1D9),
+                      color: isSelected
+                          ? colors.tablePrimaryTextColor
+                          : colors.tableSecondaryTextColor,
                       fontSize: 12,
-                      fontWeight:
-                          isSelected ? FontWeight.bold : FontWeight.w500,
+                      fontWeight: isSelected
+                          ? FontWeight.bold
+                          : FontWeight.w500,
                     ),
                   ),
                   Text(
                     subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFF8B949E),
+                    style: TextStyle(
+                      color: colors.tableSecondaryTextColor,
                       fontSize: 10,
                     ),
                   ),
@@ -842,7 +825,12 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
     );
   }
 
-  Widget _buildFilterChip(String label, LogLevel level, Color activeColor) {
+  Widget _buildFilterChip(
+    AppTheme colors,
+    String label,
+    LogLevel level,
+    Color activeColor,
+  ) {
     final isSelected = _selectedLevelFilter == level;
     return InkWell(
       borderRadius: BorderRadius.circular(14),
@@ -856,17 +844,17 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
         decoration: BoxDecoration(
           color: isSelected
               ? activeColor.withValues(alpha: 0.2)
-              : const Color(0xFF21262D),
+              : colors.dataCardBackgroundColor,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isSelected ? activeColor : const Color(0xFF30363D),
+            color: isSelected ? activeColor : colors.dataCardBorderColor,
             width: isSelected ? 1.2 : 0.8,
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: isSelected ? activeColor : const Color(0xFF8B949E),
+            color: isSelected ? activeColor : colors.tableSecondaryTextColor,
             fontSize: 11,
             fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
           ),

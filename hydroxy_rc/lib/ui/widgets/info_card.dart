@@ -59,6 +59,8 @@ class InfoField extends StatelessWidget {
   final String value;
   final Color? valueColor;
   final IconData? icon;
+  final int? maxLines;
+  final TextOverflow? overflow;
 
   const InfoField({
     super.key,
@@ -66,38 +68,46 @@ class InfoField extends StatelessWidget {
     required this.value,
     this.valueColor,
     this.icon,
+    this.maxLines = 1,
+    this.overflow,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = context.appColors;
+    final effectiveOverflow = overflow ?? (maxLines != null ? TextOverflow.ellipsis : null);
+    final textWidget = Text(
+      value,
+      maxLines: maxLines,
+      overflow: effectiveOverflow,
+      style: TextStyle(
+        color: valueColor ?? colors.tablePrimaryTextColor,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(label, style: TextStyle(color: colors.dataLabelTextColor, fontSize: 10)),
         const SizedBox(height: 2),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: 12, color: valueColor ?? colors.tableSecondaryTextColor),
-              const SizedBox(width: 3),
-            ],
-            Flexible(
-              child: Text(
-                value,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: valueColor ?? colors.tablePrimaryTextColor,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
+        if (icon != null)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(icon, size: 12, color: valueColor ?? colors.tableSecondaryTextColor),
               ),
-            ),
-          ],
-        ),
+              const SizedBox(width: 3),
+              Flexible(child: textWidget),
+            ],
+          )
+        else
+          textWidget,
       ],
     );
   }

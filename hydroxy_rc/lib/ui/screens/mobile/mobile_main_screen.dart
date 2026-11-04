@@ -6,7 +6,6 @@ import 'package:hydroxy_rc/configs/extensions.dart';
 import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
 import 'package:hydroxy_rc/routes/routes_name.dart';
-import 'package:hydroxy_rc/state/themes_bloc/themes_bloc.dart';
 import 'package:hydroxy_rc/state/torrents_bloc/torrents_bloc.dart';
 import 'package:hydroxy_rc/ui/screens/main_content/models/torrent_structure_ext.dart';
 import 'package:hydroxy_rc/ui/screens/mobile/mobile_torrent_details_screen.dart';
@@ -29,6 +28,10 @@ class MobileMainScreen extends StatefulWidget {
 class _MobileMainScreenState extends State<MobileMainScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   String? _selectedCategoryFilter;
+
+  // Sorting state
+  String? _sortColumnKey;
+  bool _isAscending = true;
 
   // Search state
   bool _isSearchVisible = false;
@@ -172,6 +175,191 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
     }
 
     return result;
+  }
+
+  void _onSort(String columnKey) {
+    setState(() {
+      if (_sortColumnKey == columnKey) {
+        _isAscending = !_isAscending;
+      } else {
+        _sortColumnKey = columnKey;
+        // Speeds, Size, Progress, Peers, Downloaded, Uploaded default to descending
+        switch (columnKey) {
+          case 'Down Speed':
+          case 'Up Speed':
+          case 'Size':
+          case 'Progress':
+          case 'Downloaded':
+          case 'Uploaded':
+          case 'Peers':
+          case 'Ratio':
+            _isAscending = false;
+            break;
+          default:
+            _isAscending = true;
+            break;
+        }
+      }
+    });
+  }
+
+  List<TorrentStructure> _getSortedTorrents(List<TorrentStructure> list) {
+    if (_sortColumnKey == null) return list;
+    final sorted = List<TorrentStructure>.from(list);
+    sorted.sort((a, b) {
+      final int cmp;
+      switch (_sortColumnKey) {
+        case 'Size':
+          cmp = a.sizeBytes.compareTo(b.sizeBytes);
+          break;
+        case 'Down Speed':
+          cmp = a.downloadSpeedValue.compareTo(b.downloadSpeedValue);
+          break;
+        case 'Up Speed':
+          cmp = a.uploadSpeedValue.compareTo(b.uploadSpeedValue);
+          break;
+        case 'Downloaded':
+          cmp = a.downloadedBytes.compareTo(b.downloadedBytes);
+          break;
+        case 'Uploaded':
+          cmp = a.uploadedBytes.compareTo(b.uploadedBytes);
+          break;
+        case 'Progress':
+          cmp = a.progressValue.compareTo(b.progressValue);
+          break;
+        case 'Name':
+          cmp = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          break;
+        case 'Status':
+          cmp = a.status.toLowerCase().compareTo(b.status.toLowerCase());
+          break;
+        case 'Peers':
+          cmp = a.peersCount.compareTo(b.peersCount);
+          break;
+        case 'ETA':
+          cmp = a.etaSeconds.compareTo(b.etaSeconds);
+          break;
+        case 'Ratio':
+          cmp = a.ratio.compareTo(b.ratio);
+          break;
+        default:
+          cmp = 0;
+      }
+      return _isAscending ? cmp : -cmp;
+    });
+    return sorted;
+  }
+
+  List<PopupMenuEntry<String>> _buildSortMenuItems(BuildContext context) {
+    final colors = context.appColors;
+
+    final sortOptions = <(String, String, IconData)>[
+      ('Size', 'Size', Icons.storage_outlined),
+      ('Down Speed', 'Download Speed', Icons.arrow_downward_rounded),
+      ('Up Speed', 'Upload Speed', Icons.arrow_upward_rounded),
+      ('Downloaded', 'Downloaded', Icons.file_download_outlined),
+      ('Uploaded', 'Uploaded', Icons.file_upload_outlined),
+      ('Progress', 'Progress', Icons.pie_chart_outline_rounded),
+      ('Name', 'Name', Icons.sort_by_alpha_rounded),
+      ('Status', 'Status', Icons.flag_outlined),
+      ('Peers', 'Peers', Icons.people_outline),
+      ('ETA', 'ETA', Icons.timer_outlined),
+      ('Ratio', 'Ratio', Icons.swap_horiz_rounded),
+    ];
+
+    return [
+      PopupMenuItem<String>(
+        value: 'toggle_order',
+        child: Row(
+          children: [
+            Icon(
+              _isAscending ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+              size: 16,
+              color: colors.titleBarLogoColor,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              _isAscending ? 'Order: Ascending' : 'Order: Descending',
+              style: TextStyle(
+                color: colors.titleBarLogoColor,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const Spacer(),
+            Text(
+              'Tap to flip',
+              style: TextStyle(
+                color: colors.tableSecondaryTextColor,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+      ),
+      const PopupMenuDivider(),
+      ...sortOptions.map((opt) {
+        final key = opt.$1;
+        final label = opt.$2;
+        final icon = opt.$3;
+        final isSelected = _sortColumnKey == key;
+
+        return PopupMenuItem<String>(
+          value: key,
+          height: 38,
+          child: Row(
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: isSelected ? colors.titleBarLogoColor : colors.tableSecondaryTextColor,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: isSelected ? colors.titleBarLogoColor : colors.tablePrimaryTextColor,
+                    fontSize: 13,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ),
+              if (isSelected)
+                Icon(
+                  _isAscending ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+                  size: 14,
+                  color: colors.titleBarLogoColor,
+                ),
+            ],
+          ),
+        );
+      }),
+      if (_sortColumnKey != null) ...[
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'reset',
+          height: 38,
+          child: Row(
+            children: [
+              Icon(
+                Icons.restart_alt_rounded,
+                size: 16,
+                color: colors.accentAmberColor,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Reset to Default',
+                style: TextStyle(
+                  color: colors.accentAmberColor,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ];
   }
 
   Future<void> _recheckTorrentDialog(TorrentStructure torrent) async {
@@ -461,73 +649,37 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
             },
           ),
 
-          // More Options Menu (Theme, Logs, Logout, Shutdown)
+          // Sort Torrents Menu
           PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert_rounded, color: colors.titleBarIconColor),
+            icon: Icon(
+              Icons.sort_rounded,
+              color: _sortColumnKey != null ? colors.titleBarLogoColor : colors.titleBarIconColor,
+            ),
+            tooltip: _sortColumnKey != null
+                ? 'Sorted by $_sortColumnKey (${_isAscending ? "Asc" : "Desc"})'
+                : 'Sort Torrents',
             color: colors.popupMenuBackgroundColor,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
               side: BorderSide(color: colors.popupMenuBorderColor),
             ),
             onSelected: (val) {
-              switch (val) {
-                case 'theme':
-                  _showThemeDialog();
-                  break;
-                case 'logs':
-                  LogViewerDialog.show(context);
-                  break;
-                case 'logout':
-                  _showLogoutDialog();
-                  break;
-                case 'shutdown':
-                  _showShutdownDialog();
-                  break;
+              if (val == 'toggle_order') {
+                setState(() {
+                  _isAscending = !_isAscending;
+                });
+                return;
               }
+              if (val == 'reset') {
+                setState(() {
+                  _sortColumnKey = null;
+                  _isAscending = true;
+                });
+                return;
+              }
+              _onSort(val);
             },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'theme',
-                child: Row(
-                  children: [
-                    Icon(Icons.palette_outlined, size: 16, color: colors.tablePrimaryTextColor),
-                    const SizedBox(width: 8),
-                    Text('Theme', style: TextStyle(color: colors.tablePrimaryTextColor, fontSize: 13)),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'logs',
-                child: Row(
-                  children: [
-                    Icon(Icons.terminal_rounded, size: 16, color: colors.tablePrimaryTextColor),
-                    const SizedBox(width: 8),
-                    Text('Daemon Logs', style: TextStyle(color: colors.tablePrimaryTextColor, fontSize: 13)),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'logout',
-                child: Row(
-                  children: [
-                    Icon(Icons.logout_rounded, size: 16, color: colors.tablePrimaryTextColor),
-                    const SizedBox(width: 8),
-                    Text('Logout', style: TextStyle(color: colors.tablePrimaryTextColor, fontSize: 13)),
-                  ],
-                ),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'shutdown',
-                child: Row(
-                  children: [
-                    Icon(Icons.power_settings_new_rounded, size: 16, color: colors.accentRedColor),
-                    const SizedBox(width: 8),
-                    Text('Shutdown Daemon', style: TextStyle(color: colors.accentRedColor, fontSize: 13)),
-                  ],
-                ),
-              ),
-            ],
+            itemBuilder: (context) => _buildSortMenuItems(context),
           ),
         ],
       ),
@@ -536,7 +688,7 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
           // Animated Search Bar Area
           if (_isSearchVisible) _buildSearchBar(context),
 
-          // Mini Status Bar (connection, RAM, total speeds)
+          // Mini Status Bar (connection, total speeds)
           _buildStatusBar(context),
 
           // Horizontal Status Filter Chips Bar
@@ -551,8 +703,9 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
                   loading: () => const Center(child: CircularProgressIndicator()),
                   loaded: (allTorrents) {
                     final filteredTorrents = _filterTorrents(allTorrents);
+                    final sortedTorrents = _getSortedTorrents(filteredTorrents);
 
-                    if (filteredTorrents.isEmpty) {
+                    if (sortedTorrents.isEmpty) {
                       return _buildEmptyState(context, allTorrents.isEmpty);
                     }
 
@@ -562,9 +715,9 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
                       },
                       child: ListView.builder(
                         padding: const EdgeInsets.only(top: 4, bottom: 8),
-                        itemCount: filteredTorrents.length,
+                        itemCount: sortedTorrents.length,
                         itemBuilder: (context, index) {
-                          final torrent = filteredTorrents[index];
+                          final torrent = sortedTorrents[index];
                           return MobileTorrentCard(
                             key: ValueKey(torrent.infoHash),
                             torrent: torrent,
@@ -911,25 +1064,6 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
                 statusText,
                 style: TextStyle(color: colors.statusBarTextColor, fontSize: 11),
               ),
-              if (isOnline && _systemStats != null) ...[
-                const SizedBox(width: 8),
-                Text(
-                  '•',
-                  style: TextStyle(
-                    color: Color.fromRGBO(colors.statusBarTextColor.red, colors.statusBarTextColor.green, colors.statusBarTextColor.blue, 0.5),
-                    fontSize: 10,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'RAM: ${formatBytesDynamic(_systemStats!.processRssBytes.toString())}',
-                  style: TextStyle(
-                    color: colors.statusBarTextColor,
-                    fontSize: 11,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ],
               const Spacer(),
               BlocBuilder<TorrentsBloc, TorrentsState>(
                 builder: (context, state) {
@@ -981,55 +1115,6 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
           ),
         );
       },
-    );
-  }
-
-  void _showThemeDialog() {
-    final colors = context.appColors;
-    final themesBloc = context.read<ThemesBloc>();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: colors.popupMenuBackgroundColor,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: colors.popupMenuBorderColor),
-        ),
-        title: Row(
-          children: [
-            Icon(Icons.palette_outlined, color: colors.titleBarLogoColor, size: 20),
-            const SizedBox(width: 8),
-            const Text('Select Theme', style: TextStyle(fontSize: 16)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: ThemesBloc.availableThemes.map((theme) {
-            final isSelected = theme.themeCode == colors.themeCode;
-            return ListTile(
-              dense: true,
-              leading: Icon(
-                isSelected ? Icons.check_circle : Icons.circle_outlined,
-                size: 18,
-                color: isSelected ? colors.accentGreenColor : colors.tableSecondaryTextColor,
-              ),
-              title: Text(
-                theme.themeName,
-                style: TextStyle(
-                  color: isSelected ? colors.tablePrimaryTextColor : colors.tableSecondaryTextColor,
-                  fontSize: 14,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-              onTap: () {
-                themesBloc.add(ChangeThemeEvent(theme));
-                Navigator.of(ctx).pop();
-              },
-            );
-          }).toList(),
-        ),
-      ),
     );
   }
 }

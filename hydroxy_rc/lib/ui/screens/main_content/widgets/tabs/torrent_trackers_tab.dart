@@ -436,13 +436,19 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
                 ),
                 const SizedBox(height: 10),
                 InfoFieldGrid(
-                  columns: 2,
+                  columns: 3,
                   fields: [
-                    InfoField(label: 'Status', value: tracker.status, valueColor: statusColor),
                     InfoField(label: 'Tier', value: '${tracker.tier}'),
                     InfoField(label: 'Peers', value: '${tracker.peers}', icon: Icons.people_outline),
                     InfoField(label: 'Reannounce In', value: tracker.reannounceInString, icon: Icons.timer_outlined),
                   ],
+                ),
+                const SizedBox(height: 8),
+                InfoField(
+                  label: 'Status',
+                  value: tracker.status.isEmpty ? '—' : tracker.status,
+                  valueColor: statusColor,
+                  maxLines: null,
                 ),
               ],
             ),
