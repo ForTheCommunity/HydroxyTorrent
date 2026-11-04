@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -502,6 +503,10 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
   Widget _buildMobileGeneralTab(BuildContext context) {
     final colors = context.appColors;
     final statusColor = _getStatusColor(context, _torrent.status);
+    final pieceLength = _torrent.totalPiecesCount > 0
+        ? (_torrent.sizeBytes / _torrent.totalPiecesCount).round()
+        : 0;
+    final remainingBytes = math.max(0, _torrent.sizeBytes - _torrent.downloadedBytes);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
@@ -514,7 +519,10 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
-              side: BorderSide(color: Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.6), width: 0.8),
+              side: BorderSide(
+                color: Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.6),
+                width: 0.8,
+              ),
             ),
             child: Padding(
               padding: const EdgeInsets.all(14),
@@ -532,25 +540,73 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      Text(
-                        _torrent.progressPercentage,
-                        style: TextStyle(
-                          color: colors.tablePrimaryTextColor,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                            decoration: BoxDecoration(
+                              color: Color.fromRGBO(statusColor.red, statusColor.green, statusColor.blue, 0.15),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: Color.fromRGBO(statusColor.red, statusColor.green, statusColor.blue, 0.4),
+                                width: 0.8,
+                              ),
+                            ),
+                            child: Text(
+                              _torrent.status,
+                              style: TextStyle(
+                                color: statusColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _torrent.progressPercentage,
+                            style: TextStyle(
+                              color: colors.tablePrimaryTextColor,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 10),
                   ClipRRect(
                     borderRadius: BorderRadius.circular(4),
                     child: LinearProgressIndicator(
                       value: _torrent.progressValue,
-                      minHeight: 8,
+                      minHeight: 10,
                       backgroundColor: colors.tableProgressBarTrackColor,
                       color: statusColor,
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '${formatBytesDynamic(_torrent.downloadedBytes.toString())} of ${formatBytesDynamic(_torrent.size)}',
+                        style: TextStyle(
+                          color: colors.tablePrimaryTextColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      Text(
+                        _torrent.progressValue >= 1.0
+                            ? 'Completed'
+                            : '${formatBytesDynamic(remainingBytes.toString())} left',
+                        style: TextStyle(
+                          color: colors.tableSecondaryTextColor,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 14),
 
@@ -567,7 +623,7 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                         ),
                       ),
                       Text(
-                        '${_torrent.completedPieces} / ${_torrent.totalPieces}',
+                        '${_torrent.completedPieces} / ${_torrent.totalPieces} pieces',
                         style: TextStyle(
                           color: colors.tablePrimaryTextColor,
                           fontSize: 11,
@@ -581,9 +637,19 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                     infoHash: _torrent.infoHash,
                     totalPieces: _torrent.totalPiecesCount,
                     completedPieces: _torrent.completedPiecesCount,
-                    height: 20,
-                    showStats: false,
+                    height: 22,
+                    showStats: true,
                   ),
+                  if (pieceLength > 0) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Piece size: ${formatBytesDynamic(pieceLength.toString())}  •  ${_torrent.totalPieces} total pieces',
+                      style: TextStyle(
+                        color: colors.tableSecondaryTextColor,
+                        fontSize: 10.5,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -591,28 +657,37 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
 
           const SizedBox(height: 10),
 
-          // Card 2: Transfer Metrics
+          // Card 2: Transfer Statistics
           Card(
             color: colors.dataCardBackgroundColor,
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
-              side: BorderSide(color: Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.6), width: 0.8),
+              side: BorderSide(
+                color: Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.6),
+                width: 0.8,
+              ),
             ),
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Transfer Statistics',
-                    style: TextStyle(
-                      color: colors.tablePrimaryTextColor,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    children: [
+                      Icon(Icons.swap_vert_rounded, size: 16, color: colors.accentBlueColor),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Transfer Statistics',
+                        style: TextStyle(
+                          color: colors.tablePrimaryTextColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 12),
                   _buildStatRow(
                     colors,
                     label1: 'Down Speed:',
@@ -631,18 +706,25 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                   ),
                   _buildStatRow(
                     colors,
-                    label1: 'Connected Peers:',
-                    value1: '${_torrent.peers} peers',
+                    label1: 'ETA Remaining:',
+                    value1: _torrent.etaString,
                     label2: 'Share Ratio:',
                     value2: _torrent.ratioString,
                   ),
                   _buildStatRow(
                     colors,
-                    label1: 'ETA Remaining:',
-                    value1: _torrent.etaString,
-                    label2: 'Status:',
-                    value2: _torrent.status,
-                    color2: statusColor,
+                    label1: 'Connected Peers:',
+                    value1: '${_torrent.peers} connected',
+                    label2: 'Pieces Progress:',
+                    value2: '${_torrent.completedPieces} / ${_torrent.totalPieces}',
+                  ),
+                  _buildStatRow(
+                    colors,
+                    label1: 'Status:',
+                    value1: _torrent.status,
+                    color1: statusColor,
+                    label2: 'Data Remaining:',
+                    value2: formatBytesDynamic(remainingBytes.toString()),
                   ),
                 ],
               ),
@@ -657,37 +739,92 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
-              side: BorderSide(color: Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.6), width: 0.8),
+              side: BorderSide(
+                color: Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.6),
+                width: 0.8,
+              ),
             ),
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Torrent Information',
-                    style: TextStyle(
-                      color: colors.tablePrimaryTextColor,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  _buildSingleInfoRow(
-                    colors,
-                    label: 'Total Size:',
-                    value: formatBytesDynamic(_torrent.size),
-                  ),
-                  _buildSingleInfoRow(
-                    colors,
-                    label: 'Category:',
-                    value: _torrent.category.isNotEmpty ? _torrent.category : 'None (Uncategorized)',
-                  ),
                   Row(
                     children: [
+                      Icon(Icons.info_outline_rounded, size: 16, color: colors.titleBarLogoColor),
+                      const SizedBox(width: 6),
                       Text(
-                        'Sequential Download: ',
-                        style: TextStyle(color: colors.dataLabelTextColor, fontSize: 12),
+                        'Torrent Information',
+                        style: TextStyle(
+                          color: colors.tablePrimaryTextColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // Name (Full name, selectable)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Name:',
+                        style: TextStyle(color: colors.dataLabelTextColor, fontSize: 11),
+                      ),
+                      const SizedBox(height: 2),
+                      SelectableText(
+                        _torrent.name,
+                        style: TextStyle(
+                          color: colors.tablePrimaryTextColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _buildStatRow(
+                    colors,
+                    label1: 'Total Size:',
+                    value1: formatBytesDynamic(_torrent.size),
+                    label2: 'Storage Target:',
+                    value2: _torrent.storage.isNotEmpty ? _torrent.storage : 'default',
+                  ),
+                  _buildStatRow(
+                    colors,
+                    label1: 'Category:',
+                    value1: _torrent.category.isNotEmpty ? _torrent.category : 'None (Uncategorized)',
+                    label2: 'Piece Size:',
+                    value2: pieceLength > 0 ? formatBytesDynamic(pieceLength.toString()) : '—',
+                  ),
+                  _buildStatRow(
+                    colors,
+                    label1: 'Completed Pieces:',
+                    value1: '${_torrent.completedPieces} pieces',
+                    label2: 'Total Pieces:',
+                    value2: '${_torrent.totalPieces} pieces',
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Sequential Download: ',
+                            style: TextStyle(color: colors.dataLabelTextColor, fontSize: 11),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _torrent.sequential ? 'Enabled (Sequential Order)' : 'Disabled (Rarest-First)',
+                            style: TextStyle(
+                              color: _torrent.sequential ? colors.accentBlueColor : colors.tableSecondaryTextColor,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
                       const Spacer(),
                       Switch(
@@ -697,12 +834,12 @@ class _MobileTorrentDetailsScreenState extends State<MobileTorrentDetailsScreen>
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 8),
                   Text(
-                    'Info Hash:',
-                    style: TextStyle(color: colors.dataLabelTextColor, fontSize: 12),
+                    'Info Hash (SHA-1):',
+                    style: TextStyle(color: colors.dataLabelTextColor, fontSize: 11),
                   ),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: 4),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(

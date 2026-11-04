@@ -242,6 +242,55 @@ class MobileTorrentCard extends StatelessWidget {
                 ],
               ),
 
+              if (torrent.category.isNotEmpty || (torrent.storage.isNotEmpty && torrent.storage != 'default')) ...[
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    if (torrent.category.isNotEmpty) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: Color.fromRGBO(colors.tableAccentTextColor.red, colors.tableAccentTextColor.green, colors.tableAccentTextColor.blue, 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.label_outline_rounded, size: 10, color: colors.tableAccentTextColor),
+                            const SizedBox(width: 3),
+                            Text(
+                              torrent.category,
+                              style: TextStyle(color: colors.tableAccentTextColor, fontSize: 10, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    if (torrent.storage.isNotEmpty && torrent.storage != 'default') ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: Color.fromRGBO(colors.tableSecondaryTextColor.red, colors.tableSecondaryTextColor.green, colors.tableSecondaryTextColor.blue, 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.dns_outlined, size: 10, color: colors.tableSecondaryTextColor),
+                            const SizedBox(width: 3),
+                            Text(
+                              torrent.storage,
+                              style: TextStyle(color: colors.tableSecondaryTextColor, fontSize: 10),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+
               const SizedBox(height: 6),
 
               // Speeds & Peers Row + Quick Actions
