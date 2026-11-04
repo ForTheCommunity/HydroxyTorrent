@@ -114,6 +114,29 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
           if (target == 'queued') return s == 'queued';
           return s == target;
         }).toList();
+      } else if (f.startsWith('storage:')) {
+        final remainder = f.substring('storage:'.length);
+        if (remainder.contains('/category:')) {
+          final parts = remainder.split('/category:');
+          final targetStorage = parts[0].trim();
+          final targetCat = parts[1].trim();
+          result = result.where((t) {
+            final tStorage = t.storage.isEmpty ? 'default' : t.storage;
+            if (tStorage != targetStorage) return false;
+            final c = t.category.trim();
+            if (targetCat.isEmpty) {
+              return c.isEmpty;
+            } else {
+              return c == targetCat || c.startsWith('$targetCat/');
+            }
+          }).toList();
+        } else {
+          final targetStorage = remainder.trim();
+          result = result.where((t) {
+            final tStorage = t.storage.isEmpty ? 'default' : t.storage;
+            return tStorage == targetStorage;
+          }).toList();
+        }
       } else if (f.startsWith('category:')) {
         final targetCat = f.substring('category:'.length).trim();
         if (targetCat.isEmpty) {

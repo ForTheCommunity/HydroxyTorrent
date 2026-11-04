@@ -52,6 +52,7 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
   // Column Ordering & Widths
   final List<String> _columnKeys = [
     'Name',
+    'Storage',
     'Category',
     'Size',
     'Progress',
@@ -70,6 +71,7 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
 
   final Map<String, double> _columnWidths = {
     'Name': 240.0,
+    'Storage': 100.0,
     'Category': 120.0,
     'Size': 95.0,
     'Progress': 140.0,
@@ -869,6 +871,29 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
           }
           return st == targetStatus;
         }).toList();
+      } else if (f.startsWith('storage:')) {
+        final remainder = f.substring('storage:'.length);
+        if (remainder.contains('/category:')) {
+          final parts = remainder.split('/category:');
+          final targetStorage = parts[0].trim();
+          final targetCat = parts[1].trim();
+          result = result.where((t) {
+            final tStorage = t.storage.isEmpty ? 'default' : t.storage;
+            if (tStorage != targetStorage) return false;
+            final c = t.category.trim();
+            if (targetCat.isEmpty) {
+              return c.isEmpty;
+            } else {
+              return c == targetCat || c.startsWith('$targetCat/');
+            }
+          }).toList();
+        } else {
+          final targetStorage = remainder.trim();
+          result = result.where((t) {
+            final tStorage = t.storage.isEmpty ? 'default' : t.storage;
+            return tStorage == targetStorage;
+          }).toList();
+        }
       } else if (f.startsWith('category:')) {
         final targetCat = f.substring('category:'.length).trim();
         if (targetCat.isEmpty) {
@@ -926,6 +951,11 @@ class _TorrentDashboardScreenState extends State<TorrentDashboardScreen> {
       switch (_sortColumnKey) {
         case 'Name':
           cmp = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          break;
+        case 'Storage':
+          cmp = (a.storage.isEmpty ? 'default' : a.storage)
+              .toLowerCase()
+              .compareTo((b.storage.isEmpty ? 'default' : b.storage).toLowerCase());
           break;
         case 'Category':
           cmp = a.category.toLowerCase().compareTo(b.category.toLowerCase());

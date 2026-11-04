@@ -1,6 +1,7 @@
 class TorrentStructure {
   final String infoHash;
   final String name;
+  final String storage;
   final String category;
   final String size;
   final String downloaded;
@@ -17,6 +18,7 @@ class TorrentStructure {
   TorrentStructure({
     required this.infoHash,
     required this.name,
+    this.storage = 'default',
     this.category = '',
     required this.size,
     required this.downloaded,
@@ -35,6 +37,7 @@ class TorrentStructure {
     return TorrentStructure(
       infoHash: json['info_hash']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
+      storage: json['storage']?.toString() ?? 'default',
       category: json['category']?.toString() ?? '',
       size: json['size']?.toString() ?? '0',
       downloaded: json['downloaded']?.toString() ?? '0',
@@ -47,6 +50,35 @@ class TorrentStructure {
       totalPieces: json['total_pieces']?.toString() ?? '0',
       completedPieces: json['completed_pieces']?.toString() ?? '0',
       sequential: json['sequential'] == true,
+    );
+  }
+}
+
+class StorageTargetModel {
+  final String name;
+  final String watchDirectory;
+  final String downloadDirectory;
+  final String? tempDirectory;
+  final List<String> categories;
+
+  StorageTargetModel({
+    required this.name,
+    required this.watchDirectory,
+    required this.downloadDirectory,
+    this.tempDirectory,
+    this.categories = const [],
+  });
+
+  factory StorageTargetModel.fromJson(Map<String, dynamic> json) {
+    return StorageTargetModel(
+      name: json['name']?.toString() ?? 'default',
+      watchDirectory: json['watch_directory']?.toString() ?? '',
+      downloadDirectory: json['download_directory']?.toString() ?? '',
+      tempDirectory: json['temp_directory']?.toString(),
+      categories: (json['categories'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
     );
   }
 }

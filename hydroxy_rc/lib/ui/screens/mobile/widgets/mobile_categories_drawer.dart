@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hydroxy_rc/configs/converter.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
+import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
 import 'package:hydroxy_rc/state/themes_bloc/themes_bloc.dart';
 import 'package:hydroxy_rc/state/torrents_bloc/torrents_bloc.dart';
 import 'package:hydroxy_rc/themes/app_theme.dart';
 
-class MobileCategoriesDrawer extends StatelessWidget {
+class MobileCategoriesDrawer extends StatefulWidget {
   final String? selectedFilter;
   final ValueChanged<String?> onFilterSelected;
   final SystemStatsModel? systemStats;
@@ -24,6 +25,31 @@ class MobileCategoriesDrawer extends StatelessWidget {
     required this.onLogout,
     required this.onShutdown,
   });
+
+  @override
+  State<MobileCategoriesDrawer> createState() => _MobileCategoriesDrawerState();
+}
+
+class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
+  List<StorageTargetModel> _storages = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStorages();
+  }
+
+  Future<void> _loadStorages() async {
+    if (!ApiClient.instance.isAuthenticated) return;
+    try {
+      final items = await getStorages();
+      if (mounted) {
+        setState(() {
+          _storages = items;
+        });
+      }
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -122,7 +148,7 @@ class MobileCategoriesDrawer extends StatelessWidget {
                       ),
 
                       const SizedBox(height: 12),
-                      _buildCategoriesSection(context, torrents),
+                      _buildStoragesSection(context, torrents),
                     ],
                   );
                 },
@@ -178,61 +204,83 @@ class MobileCategoriesDrawer extends StatelessWidget {
                   Text(
                     'Remote Client',
                     style: TextStyle(
-                      color: Color.fromRGBO(colors.sidebarItemTextColor.red, colors.sidebarItemTextColor.green, colors.sidebarItemTextColor.blue, 0.7),
-                      fontSize: 11,
+                      color: Color.fromRGBO(colors.titleBarTextColor.red, colors.titleBarTextColor.green, colors.titleBarTextColor.blue, 0.7),
+                      fontSize: 12,
                     ),
                   ),
                 ],
               ),
             ],
           ),
-
-          if (systemStats != null) ...[
+          if (widget.systemStats != null) ...[
             const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: colors.searchBarBackgroundColor,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: colors.dividerColor, width: 0.8),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.memory_rounded,
-                    size: 14,
-                    color: colors.accentPurpleColor,
+            Row(
+              children: [
+                Expanded(
+                  child: _buildHeaderStat(
+                    icon: Icons.arrow_downward_rounded,
+                    label: 'Down',
+                    value: formatSpeed(widget.systemStats!.downloadSpeed),
+                    color: colors.downloadSpeedColor,
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Daemon: ${formatBytesDynamic(systemStats!.processRssBytes.toString())}',
-                    style: TextStyle(
-                      color: colors.sidebarItemTextColor,
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                    ),
+                ),
+                Expanded(
+                  child: _buildHeaderStat(
+                    icon: Icons.arrow_upward_rounded,
+                    label: 'Up',
+                    value: formatSpeed(widget.systemStats!.uploadSpeed),
+                    color: colors.uploadSpeedColor,
                   ),
-                  const Spacer(),
-                  Icon(
-                    Icons.pie_chart_outline_rounded,
-                    size: 14,
+                ),
+                Expanded(
+                  child: _buildHeaderStat(
+                    icon: Icons.hub_rounded,
+                    label: 'Peers',
+                    value: '${widget.systemStats!.peers}',
                     color: colors.accentBlueColor,
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Sys: ${(systemStats!.systemMemoryUsagePercent * 100).toStringAsFixed(0)}%',
-                    style: TextStyle(
-                      color: colors.sidebarItemTextColor,
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ],
         ],
       ),
+    );
+  }
+
+  Widget _buildHeaderStat({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 4),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white54,
+                fontSize: 9,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            Text(
+              value,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -262,12 +310,12 @@ class MobileCategoriesDrawer extends StatelessWidget {
   }) {
     final colors = context.appColors;
     final isSelected =
-        selectedFilter == filterKey ||
-        (selectedFilter == null && filterKey == 'all');
+        widget.selectedFilter == filterKey ||
+        (widget.selectedFilter == null && filterKey == 'all');
 
     return InkWell(
       onTap: () {
-        onFilterSelected(filterKey == 'all' ? null : filterKey);
+        widget.onFilterSelected(filterKey == 'all' ? null : filterKey);
         Navigator.of(context).pop();
       },
       child: Container(
@@ -324,75 +372,130 @@ class MobileCategoriesDrawer extends StatelessWidget {
     );
   }
 
-  Widget _buildCategoriesSection(
+  Widget _buildStoragesSection(
     BuildContext context,
     List<TorrentStructure> torrents,
   ) {
-    final colors = context.appColors;
-
-    // Build category map: category name -> count
-    final categoryCounts = <String, int>{};
-    int uncategorizedCount = 0;
-
-    for (final t in torrents) {
-      final cat = t.category.trim();
-      if (cat.isEmpty) {
-        uncategorizedCount++;
-      } else {
-        categoryCounts[cat] = (categoryCounts[cat] ?? 0) + 1;
-      }
+    final storageNames = <String>{
+      ..._storages.map((s) => s.name),
+      ...torrents.map((t) => t.storage.isEmpty ? 'default' : t.storage),
+    };
+    if (storageNames.isEmpty) {
+      storageNames.add('default');
     }
-
-    if (categoryCounts.isEmpty && uncategorizedCount == 0) {
-      return const SizedBox.shrink();
-    }
-
-    final sortedCats = categoryCounts.keys.toList()..sort();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildSectionHeader(context, 'CATEGORIES'),
+        _buildSectionHeader(context, 'STORAGE DISKS'),
+        for (final storageName in storageNames) ...[
+          _buildStorageDiskItem(context, storageName, torrents),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildStorageDiskItem(
+    BuildContext context,
+    String storageName,
+    List<TorrentStructure> torrents,
+  ) {
+    final storageTorrents = torrents
+        .where(
+          (t) => (t.storage.isEmpty ? 'default' : t.storage) == storageName,
+        )
+        .toList();
+
+    final knownCats = _storages
+        .firstWhere(
+          (s) => s.name == storageName,
+          orElse: () => StorageTargetModel(
+            name: storageName,
+            watchDirectory: '',
+            downloadDirectory: '',
+          ),
+        )
+        .categories;
+
+    final allCats = <String>{
+      ...knownCats,
+      ...storageTorrents
+          .map((t) => t.category.trim())
+          .where((c) => c.isNotEmpty),
+    }.toList()
+      ..sort();
+
+    final uncategorizedCount =
+        storageTorrents.where((t) => t.category.trim().isEmpty).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Storage Disk Header
+        _buildCategoryItem(
+          context: context,
+          filterKey: 'storage:$storageName',
+          displayLabel: storageName,
+          icon: Icons.dns_rounded,
+          count: storageTorrents.length,
+          isStorageHeader: true,
+        ),
+
+        // Nested Categories (including empty categories with count 0!)
+        ...allCats.map((cat) {
+          final catCount = storageTorrents.where((t) {
+            final tc = t.category.trim();
+            return tc == cat || tc.startsWith('$cat/');
+          }).length;
+
+          return _buildCategoryItem(
+            context: context,
+            filterKey: 'storage:$storageName/category:$cat',
+            displayLabel: cat,
+            icon: Icons.folder_outlined,
+            count: catCount,
+            indent: 28.0,
+          );
+        }),
+
         if (uncategorizedCount > 0)
           _buildCategoryItem(
             context: context,
-            category: '',
+            filterKey: 'storage:$storageName/category:',
             displayLabel: 'Uncategorized',
             icon: Icons.folder_off_outlined,
             count: uncategorizedCount,
+            indent: 28.0,
           ),
-        ...sortedCats.map((cat) {
-          return _buildCategoryItem(
-            context: context,
-            category: cat,
-            displayLabel: cat,
-            icon: Icons.folder_outlined,
-            count: categoryCounts[cat] ?? 0,
-          );
-        }),
       ],
     );
   }
 
   Widget _buildCategoryItem({
     required BuildContext context,
-    required String category,
+    required String filterKey,
     required String displayLabel,
     required IconData icon,
     required int count,
+    bool isStorageHeader = false,
+    double indent = 12.0,
   }) {
     final colors = context.appColors;
-    final filterKey = 'category:$category';
-    final isSelected = selectedFilter == filterKey;
+    final isSelected = widget.selectedFilter == filterKey;
 
     return InkWell(
       onTap: () {
-        onFilterSelected(filterKey);
+        widget.onFilterSelected(filterKey);
         Navigator.of(context).pop();
       },
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        padding: EdgeInsets.only(
+          left: indent,
+          right: 12,
+          top: 9,
+          bottom: 9,
+        ),
         decoration: BoxDecoration(
           color: isSelected
               ? colors.sidebarSelectedItemBackgroundColor
@@ -403,10 +506,12 @@ class MobileCategoriesDrawer extends StatelessWidget {
           children: [
             Icon(
               icon,
-              size: 16,
+              size: isStorageHeader ? 18 : 16,
               color: isSelected
                   ? colors.accentAmberColor
-                  : colors.sidebarIconColor,
+                  : (isStorageHeader
+                        ? colors.accentPurpleColor
+                        : colors.sidebarIconColor),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -416,20 +521,20 @@ class MobileCategoriesDrawer extends StatelessWidget {
                   color: isSelected
                       ? colors.sidebarSelectedItemTextColor
                       : colors.sidebarItemTextColor,
-                  fontSize: 13,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  fontSize: isStorageHeader ? 13 : 12,
+                  fontWeight: (isSelected || isStorageHeader)
+                      ? FontWeight.bold
+                      : FontWeight.normal,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
               decoration: BoxDecoration(
                 color: isSelected
                     ? Color.fromRGBO(colors.accentAmberColor.red, colors.accentAmberColor.green, colors.accentAmberColor.blue, 0.2)
                     : Color.fromRGBO(colors.dividerColor.red, colors.dividerColor.green, colors.dividerColor.blue, 0.3),
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
                 '$count',
@@ -437,7 +542,7 @@ class MobileCategoriesDrawer extends StatelessWidget {
                   color: isSelected
                       ? colors.accentAmberColor
                       : Color.fromRGBO(colors.sidebarItemTextColor.red, colors.sidebarItemTextColor.green, colors.sidebarItemTextColor.blue, 0.7),
-                  fontSize: 11,
+                  fontSize: 10,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -450,91 +555,94 @@ class MobileCategoriesDrawer extends StatelessWidget {
 
   Widget _buildDrawerFooter(BuildContext context) {
     final colors = context.appColors;
-    final themesBloc = context.read<ThemesBloc>();
 
-    return Padding(
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      color: colors.titleBarBackgroundColor,
       child: Column(
         children: [
-          // Theme Selector Tile
-          PopupMenuButton<AppTheme>(
-            color: colors.popupMenuBackgroundColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-              side: BorderSide(color: colors.popupMenuBorderColor),
-            ),
-            onSelected: (theme) => themesBloc.add(ChangeThemeEvent(theme)),
-            itemBuilder: (context) {
-              return ThemesBloc.availableThemes.map((theme) {
-                final isSelected = theme.themeCode == colors.themeCode;
-                return PopupMenuItem<AppTheme>(
-                  value: theme,
-                  child: Row(
-                    children: [
-                      Icon(
-                        isSelected ? Icons.check_circle : Icons.circle_outlined,
-                        size: 16,
-                        color: isSelected
-                            ? colors.accentGreenColor
-                            : colors.tableSecondaryTextColor,
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        theme.themeName,
-                        style: TextStyle(
-                          color: isSelected
-                              ? colors.tablePrimaryTextColor
-                              : colors.tableSecondaryTextColor,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList();
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: colors.dividerColor),
-              ),
-              child: Row(
+          // Theme Selector Row
+          BlocBuilder<ThemesBloc, ThemesState>(
+            builder: (context, state) {
+              final currentTheme = state.maybeWhen(
+                changed: (theme) => theme,
+                orElse: () => AppTheme.dark,
+              );
+
+              return Row(
                 children: [
                   Icon(
                     Icons.palette_outlined,
-                    size: 18,
-                    color: colors.titleBarIconColor,
+                    size: 16,
+                    color: colors.titleBarTextColor,
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   Text(
-                    'Theme: ${colors.themeName}',
+                    'Theme:',
                     style: TextStyle(
-                      color: colors.sidebarItemTextColor,
+                      color: colors.titleBarTextColor,
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
-                  const Spacer(),
-                  Icon(
-                    Icons.arrow_drop_down,
-                    size: 18,
-                    color: colors.sidebarItemTextColor,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Container(
+                      height: 28,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: colors.sidebarBackgroundColor,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: colors.dividerColor),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<AppTheme>(
+                          value: currentTheme,
+                          dropdownColor: colors.sidebarBackgroundColor,
+                          isDense: true,
+                          icon: Icon(
+                            Icons.arrow_drop_down,
+                            size: 16,
+                            color: colors.titleBarTextColor,
+                          ),
+                          items: AppTheme.values.map((theme) {
+                            return DropdownMenuItem<AppTheme>(
+                              value: theme,
+                              child: Text(
+                                theme.name.toUpperCase(),
+                                style: TextStyle(
+                                  color: colors.tablePrimaryTextColor,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (newTheme) {
+                            if (newTheme != null) {
+                              context.read<ThemesBloc>().add(
+                                    ThemesEvent.changeTheme(theme: newTheme),
+                                  );
+                            }
+                          },
+                        ),
+                      ),
+                    ),
                   ),
                 ],
-              ),
-            ),
+              );
+            },
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
 
-          // Action Buttons Row: Logs, Logout, Shutdown
+          // Action Buttons: Logs, Logout, Shutdown
           Row(
             children: [
               Expanded(
                 child: TextButton.icon(
                   onPressed: () {
                     Navigator.of(context).pop();
-                    onShowLogs();
+                    widget.onShowLogs();
                   },
                   icon: Icon(
                     Icons.terminal_rounded,
@@ -560,7 +668,7 @@ class MobileCategoriesDrawer extends StatelessWidget {
                 child: TextButton.icon(
                   onPressed: () {
                     Navigator.of(context).pop();
-                    onLogout();
+                    widget.onLogout();
                   },
                   icon: Icon(
                     Icons.logout_rounded,
@@ -586,7 +694,7 @@ class MobileCategoriesDrawer extends StatelessWidget {
                 child: TextButton.icon(
                   onPressed: () {
                     Navigator.of(context).pop();
-                    onShutdown();
+                    widget.onShutdown();
                   },
                   icon: Icon(
                     Icons.power_settings_new_rounded,

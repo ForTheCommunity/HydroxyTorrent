@@ -523,6 +523,16 @@ class TorrentDataTable extends StatelessWidget {
           ],
         );
         break;
+      case 'Storage':
+        child = Text(
+          torrent.storage.isNotEmpty ? torrent.storage : 'default',
+          style: TextStyle(
+            color: colors.tablePrimaryTextColor,
+            fontSize: 11,
+          ),
+          overflow: TextOverflow.ellipsis,
+        );
+        break;
       case 'Category':
         child = Text(
           torrent.category.isNotEmpty ? torrent.category : '—',

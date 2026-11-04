@@ -44,12 +44,10 @@ impl TorrentDirData {
 
         let mut dir_paths: Vec<TorrentDirPaths> = Vec::new();
         for (dir_name, torrent_entries) in grouped_paths {
-            if !torrent_entries.is_empty() {
-                dir_paths.push(TorrentDirPaths {
-                    dir_name,
-                    torrent_entries,
-                });
-            }
+            dir_paths.push(TorrentDirPaths {
+                dir_name,
+                torrent_entries,
+            });
         }
 
         // dir reflection: ensure download directories mirror watch directory structure
@@ -63,6 +61,24 @@ impl TorrentDirData {
         }
 
         Ok(dir_paths)
+    }
+
+    /// Returns all category subdirectories found under watch_dir up to max_depth,
+    /// even if they contain no .torrent files.
+    pub async fn scan_categories(
+        watch_dir: &str,
+        max_depth: usize,
+    ) -> Result<Vec<String>, StorageIOError> {
+        let watch_path = Path::new(watch_dir);
+        let mut grouped_paths: HashMap<String, Vec<TorrentFileEntry>> = HashMap::new();
+        Self::scan_paths_recursive(watch_path, "", 0, max_depth, &mut grouped_paths).await?;
+        let mut categories: Vec<String> = grouped_paths
+            .into_keys()
+            .filter(|k| !k.is_empty())
+            .collect();
+        categories.sort();
+        categories.dedup();
+        Ok(categories)
     }
 
     fn scan_paths_recursive<'a>(
@@ -98,6 +114,8 @@ impl TorrentDirData {
                     } else {
                         format!("{}/{}", rel_dir, file_name)
                     };
+
+                    grouped.entry(next_rel.clone()).or_default();
 
                     Self::scan_paths_recursive(
                         &entry_path,

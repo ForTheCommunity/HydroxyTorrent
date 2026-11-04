@@ -15,7 +15,7 @@ use hydroxy_config::{HydroxyConfig, RemoteConfig};
 
 use crate::{
     control::{TorrentCommand, TorrentControlRegistry},
-    remote::{TorrentApiItem, TorrentDetailApiItem},
+    remote::{StorageTargetApiItem, TorrentApiItem, TorrentDetailApiItem},
     stats::{stats::TorrentStatsSnapshot, stats_registry::StatsRegistry},
 };
 
@@ -316,6 +316,48 @@ pub async fn get_torrents(State(state): State<Arc<ServerState>>) -> impl IntoRes
     Json(items)
 }
 
+pub async fn get_storages(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let config = match HydroxyConfig::init() {
+        Ok(c) => c,
+        Err(_) => return Json(vec![]),
+    };
+
+    let active_snapshots = state.stats.snapshot_all();
+    let mut result = Vec::new();
+
+    for storage in &config.storage_config {
+        let mut categories = hydroxy_storage_io::TorrentDirData::scan_categories(
+            &storage.watch_directory,
+            storage.watch_directory_max_depth.max(1),
+        )
+        .await
+        .unwrap_or_default();
+
+        // Also include any categories from active torrents associated with this storage
+        for snap in &active_snapshots {
+            if snap.storage == storage.name {
+                let cat = snap.category.trim();
+                if !cat.is_empty() && !categories.contains(&cat.to_string()) {
+                    categories.push(cat.to_string());
+                }
+            }
+        }
+
+        categories.sort();
+        categories.dedup();
+
+        result.push(StorageTargetApiItem {
+            name: storage.name.clone(),
+            watch_directory: storage.watch_directory.clone(),
+            download_directory: storage.download_directory.clone(),
+            temp_directory: storage.temp_directory.clone(),
+            categories,
+        });
+    }
+
+    Json(result)
+}
+
 pub async fn get_torrent_detail(
     Path(info_hash): Path<String>,
     State(state): State<Arc<ServerState>>,
@@ -349,6 +391,7 @@ pub async fn get_torrent_detail(
         Ok(Json(TorrentDetailApiItem {
             info_hash: snap.info_hash,
             name: snap.name,
+            storage: snap.storage,
             category: snap.category,
             size: snap.total_bytes,
             downloaded,
@@ -705,6 +748,7 @@ fn snapshot_to_api_item(snap: TorrentStatsSnapshot) -> TorrentApiItem {
     TorrentApiItem {
         info_hash: snap.info_hash,
         name: snap.name,
+        storage: snap.storage,
         category: snap.category,
         size: snap.total_bytes,
         downloaded,

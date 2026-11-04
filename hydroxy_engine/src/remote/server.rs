@@ -13,9 +13,9 @@ use tracing::info;
 use crate::{
     control::TorrentControlRegistry,
     remote::api::{
-        auth_middleware, auth_status_handler, get_logs, get_minor_logs, get_system_stats,
-        get_torrent_detail, get_torrents, login_handler, logout_handler, pause_torrent,
-        reannounce_torrent, recheck_torrent, remove_torrent, resume_torrent,
+        auth_middleware, auth_status_handler, get_logs, get_minor_logs, get_storages,
+        get_system_stats, get_torrent_detail, get_torrents, login_handler, logout_handler,
+        pause_torrent, reannounce_torrent, recheck_torrent, remove_torrent, resume_torrent,
         set_sequential_download, shutdown_daemon, unsubscribe_minor_logs, ServerState,
     },
     stats::stats_registry::StatsRegistry,
@@ -45,6 +45,7 @@ pub async fn start_server(
         .route("/auth/logout", post(logout_handler))
         .route("/auth/status", get(auth_status_handler))
         .route("/torrents", get(get_torrents))
+        .route("/storages", get(get_storages))
         .route("/torrent/:info_hash", get(get_torrent_detail).delete(remove_torrent))
         .route("/torrent/:info_hash/pause", post(pause_torrent))
         .route("/torrent/:info_hash/resume", post(resume_torrent))

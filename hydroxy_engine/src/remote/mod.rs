@@ -10,6 +10,7 @@ pub mod server;
 pub struct TorrentApiItem {
     pub info_hash: String,
     pub name: String,
+    pub storage: String,
     pub category: String,
     pub size: u64,
     pub downloaded: u64,
@@ -28,6 +29,7 @@ pub struct TorrentApiItem {
 pub struct TorrentDetailApiItem {
     pub info_hash: String,
     pub name: String,
+    pub storage: String,
     pub category: String,
     pub size: u64,
     pub downloaded: u64,
@@ -44,4 +46,13 @@ pub struct TorrentDetailApiItem {
     pub peer_list: Vec<PeerStatsSnapshot>,
     pub trackers: Vec<TrackerStats>,
     pub files: Vec<TorrentFileStats>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct StorageTargetApiItem {
+    pub name: String,
+    pub watch_directory: String,
+    pub download_directory: String,
+    pub temp_directory: Option<String>,
+    pub categories: Vec<String>,
 }

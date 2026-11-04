@@ -215,6 +215,16 @@ class TorrentGeneralTab extends StatelessWidget {
               ),
               Expanded(
                 child: _DetailRow(
+                  label: 'Storage:',
+                  value: torrent.storage.isNotEmpty ? torrent.storage : 'default',
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: _DetailRow(
                   label: 'Sequential:',
                   value: torrent.sequential ? 'Enabled (Sequential Order)' : 'Disabled (Rarest-First)',
                 ),

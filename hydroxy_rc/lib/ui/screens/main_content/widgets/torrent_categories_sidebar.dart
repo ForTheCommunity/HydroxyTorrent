@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hydroxy_rc/configs/extensions.dart';
+import 'package:hydroxy_rc/network/api.dart';
 import 'package:hydroxy_rc/network/models.dart';
 import 'package:hydroxy_rc/state/torrents_bloc/torrents_bloc.dart';
 
@@ -30,31 +33,58 @@ class TorrentCategoriesSidebar extends StatefulWidget {
 
 class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
   final Set<String> _expandedPaths = {};
+  final Set<String> _expandedStorages = {};
+  List<StorageTargetModel> _storages = [];
+  Timer? _storagesTimer;
   bool _statusExpanded = true;
-  bool _categoriesExpanded = true;
-  bool _hasAutoExpanded = false;
+  bool _storagesExpanded = true;
 
   @override
   void initState() {
     super.initState();
+    _loadStorages();
+    _storagesTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => _loadStorages(),
+    );
   }
 
-  // Build hierarchical category tree from a list of torrents
-  Map<String, CategoryNode> _buildCategoryTree(
-    List<TorrentStructure> torrents,
+  @override
+  void dispose() {
+    _storagesTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadStorages() async {
+    if (!ApiClient.instance.isAuthenticated) return;
+    try {
+      final items = await getStorages();
+      if (mounted) {
+        setState(() {
+          _storages = items;
+          for (final s in items) {
+            _expandedStorages.add(s.name);
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  // Build hierarchical category tree for a specific storage target
+  Map<String, CategoryNode> _buildCategoryTreeForStorage(
+    String storageName,
+    List<String> knownCategories,
+    List<TorrentStructure> storageTorrents,
   ) {
     final rootNodes = <String, CategoryNode>{};
 
-    for (final torrent in torrents) {
-      final rawCat = torrent.category.trim();
-      if (rawCat.isEmpty) continue;
-
-      final segments = rawCat
+    void ensurePath(String catPath) {
+      final segments = catPath
           .split('/')
           .map((s) => s.trim())
           .where((s) => s.isNotEmpty)
           .toList();
-      if (segments.isEmpty) continue;
+      if (segments.isEmpty) return;
 
       Map<String, CategoryNode> currentLevel = rootNodes;
       String currentPath = '';
@@ -70,18 +100,47 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
             count: 0,
           );
         }
-
-        // Each node in the branch counts the torrent
-        currentLevel[segment]!.count += 1;
         currentLevel = currentLevel[segment]!.children;
       }
     }
 
-    return rootNodes;
-  }
+    // 1. Ensure all discovered categories exist in tree (including empty folders like anime)
+    for (final cat in knownCategories) {
+      ensurePath(cat);
+    }
 
-  int _countUncategorized(List<TorrentStructure> torrents) {
-    return torrents.where((t) => t.category.trim().isEmpty).length;
+    // 2. Also ensure any categories from active torrents on this storage exist
+    for (final t in storageTorrents) {
+      final cat = t.category.trim();
+      if (cat.isNotEmpty) {
+        ensurePath(cat);
+      }
+    }
+
+    // 3. Count matching torrents for each category node
+    for (final t in storageTorrents) {
+      final rawCat = t.category.trim();
+      if (rawCat.isEmpty) continue;
+
+      final segments = rawCat
+          .split('/')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (segments.isEmpty) continue;
+
+      Map<String, CategoryNode> currentLevel = rootNodes;
+      for (final segment in segments) {
+        if (currentLevel.containsKey(segment)) {
+          currentLevel[segment]!.count += 1;
+          currentLevel = currentLevel[segment]!.children;
+        } else {
+          break;
+        }
+      }
+    }
+
+    return rootNodes;
   }
 
   Map<String, int> _countStatuses(List<TorrentStructure> torrents) {
@@ -134,14 +193,20 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
         );
 
         final totalTorrents = torrents.length;
-        final uncategorizedCount = _countUncategorized(torrents);
         final statusCounts = _countStatuses(torrents);
-        final categoryTree = _buildCategoryTree(torrents);
 
-        // Auto-expand root category nodes on first load only
-        if (!_hasAutoExpanded && categoryTree.isNotEmpty) {
-          _expandedPaths.addAll(categoryTree.keys);
-          _hasAutoExpanded = true;
+        // Collect all distinct storage names
+        final storageNames = <String>{
+          ..._storages.map((s) => s.name),
+          ...torrents.map((t) => t.storage.isEmpty ? 'default' : t.storage),
+        };
+        if (storageNames.isEmpty) {
+          storageNames.add('default');
+        }
+
+        // Auto-expand all storages by default
+        for (final name in storageNames) {
+          _expandedStorages.add(name);
         }
 
         final colors = context.appColors;
@@ -294,46 +359,36 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
                       endIndent: 8,
                     ),
 
-                    // Categories section header
+                    // Storages and Categories section header
                     _buildSectionHeader(
-                      title: 'WATCH CATEGORIES',
-                      isExpanded: _categoriesExpanded,
+                      title: 'STORAGE DISKS',
+                      isExpanded: _storagesExpanded,
                       onToggle: () => setState(
-                        () => _categoriesExpanded = !_categoriesExpanded,
+                        () => _storagesExpanded = !_storagesExpanded,
                       ),
                     ),
 
-                    if (_categoriesExpanded) ...[
-                      if (categoryTree.isEmpty && uncategorizedCount == 0)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            'No categories found in watch directory',
-                            style: TextStyle(
-                              color: Colors.white24,
-                              fontSize: 10,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-
-                      // Render recursive category tree nodes
-                      for (final node in categoryTree.values)
-                        ..._renderCategoryNode(node, depth: 1),
-
-                      // Uncategorized items
-                      if (uncategorizedCount > 0)
-                        _buildItem(
-                          label: 'Uncategorized',
-                          icon: Icons.folder_off_outlined,
-                          iconColor: Colors.white38,
-                          count: uncategorizedCount,
-                          isSelected: widget.selectedFilter == 'category:',
-                          onTap: () => widget.onFilterSelected('category:'),
-                          depth: 1,
+                    if (_storagesExpanded) ...[
+                      for (final storageName in storageNames)
+                        _buildStorageItem(
+                          storageName: storageName,
+                          storageTorrents: torrents
+                              .where(
+                                (t) =>
+                                    (t.storage.isEmpty ? 'default' : t.storage) ==
+                                    storageName,
+                              )
+                              .toList(),
+                          knownCategories: _storages
+                              .firstWhere(
+                                (s) => s.name == storageName,
+                                orElse: () => StorageTargetModel(
+                                  name: storageName,
+                                  watchDirectory: '',
+                                  downloadDirectory: '',
+                                ),
+                              )
+                              .categories,
                         ),
                     ],
                   ],
@@ -381,11 +436,150 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
     );
   }
 
-  List<Widget> _renderCategoryNode(CategoryNode node, {required int depth}) {
+  Widget _buildStorageItem({
+    required String storageName,
+    required List<TorrentStructure> storageTorrents,
+    required List<String> knownCategories,
+  }) {
+    final colors = context.appColors;
+    final isStorageExpanded = _expandedStorages.contains(storageName);
+    final filterKey = 'storage:$storageName';
+    final isSelected = widget.selectedFilter == filterKey;
+    final categoryTree = _buildCategoryTreeForStorage(
+      storageName,
+      knownCategories,
+      storageTorrents,
+    );
+    final uncategorizedCount =
+        storageTorrents.where((t) => t.category.trim().isEmpty).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Storage Disk Header Item
+        Container(
+          height: 28,
+          padding: const EdgeInsets.only(left: 10, right: 8),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? colors.sidebarSelectedItemBackgroundColor
+                : Colors.transparent,
+            border: Border(
+              left: BorderSide(
+                color: isSelected
+                    ? colors.sidebarSelectedIconColor
+                    : Colors.transparent,
+                width: 2.5,
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  setState(() {
+                    if (isStorageExpanded) {
+                      _expandedStorages.remove(storageName);
+                    } else {
+                      _expandedStorages.add(storageName);
+                    }
+                  });
+                },
+                child: Container(
+                  width: 18,
+                  height: 24,
+                  alignment: Alignment.center,
+                  child: Icon(
+                    isStorageExpanded
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_right,
+                    size: 14,
+                    color: colors.sidebarIconColor,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 2),
+              Expanded(
+                child: InkWell(
+                  onTap: () => widget.onFilterSelected(filterKey),
+                  borderRadius: BorderRadius.circular(3),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.dns_rounded,
+                        size: 14,
+                        color: isSelected
+                            ? colors.sidebarSelectedIconColor
+                            : colors.accentPurpleColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          storageName,
+                          style: TextStyle(
+                            color: isSelected
+                                ? colors.sidebarSelectedItemTextColor
+                                : colors.sidebarItemTextColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      _buildCountBadge(storageTorrents.length, isSelected),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Nested Categories under this storage
+        if (isStorageExpanded) ...[
+          if (categoryTree.isEmpty && uncategorizedCount == 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 36, top: 4, bottom: 4),
+              child: Text(
+                'No categories in this storage',
+                style: TextStyle(
+                  color: colors.sidebarItemTextColor.withOpacity(0.4),
+                  fontSize: 10,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+          for (final node in categoryTree.values)
+            ..._renderStorageCategoryNode(storageName, node, depth: 2),
+          if (uncategorizedCount > 0)
+            _buildItem(
+              label: 'Uncategorized',
+              icon: Icons.folder_off_outlined,
+              iconColor: colors.sidebarItemTextColor.withOpacity(0.5),
+              count: uncategorizedCount,
+              isSelected:
+                  widget.selectedFilter == 'storage:$storageName/category:',
+              onTap: () =>
+                  widget.onFilterSelected('storage:$storageName/category:'),
+              depth: 2,
+            ),
+        ],
+      ],
+    );
+  }
+
+  List<Widget> _renderStorageCategoryNode(
+    String storageName,
+    CategoryNode node, {
+    required int depth,
+  }) {
     final widgets = <Widget>[];
     final hasChildren = node.children.isNotEmpty;
-    final isExpanded = _expandedPaths.contains(node.fullPath);
-    final filterKey = 'category:${node.fullPath}';
+    final nodeKey = '$storageName:${node.fullPath}';
+    final isExpanded = _expandedPaths.contains(nodeKey);
+    final filterKey = 'storage:$storageName/category:${node.fullPath}';
     final isSelected = widget.selectedFilter == filterKey;
 
     widgets.add(
@@ -399,9 +593,9 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
         onToggleExpand: () {
           setState(() {
             if (isExpanded) {
-              _expandedPaths.remove(node.fullPath);
+              _expandedPaths.remove(nodeKey);
             } else {
-              _expandedPaths.add(node.fullPath);
+              _expandedPaths.add(nodeKey);
             }
           });
         },
@@ -411,7 +605,9 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
 
     if (hasChildren && isExpanded) {
       for (final child in node.children.values) {
-        widgets.addAll(_renderCategoryNode(child, depth: depth + 1));
+        widgets.addAll(
+          _renderStorageCategoryNode(storageName, child, depth: depth + 1),
+        );
       }
     }
 
@@ -435,10 +631,14 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
       height: 26,
       padding: EdgeInsets.only(left: indent, right: 8),
       decoration: BoxDecoration(
-        color: isSelected ? colors.sidebarSelectedItemBackgroundColor : Colors.transparent,
+        color: isSelected
+            ? colors.sidebarSelectedItemBackgroundColor
+            : Colors.transparent,
         border: Border(
           left: BorderSide(
-            color: isSelected ? colors.sidebarSelectedIconColor : Colors.transparent,
+            color: isSelected
+                ? colors.sidebarSelectedIconColor
+                : Colors.transparent,
             width: 2.5,
           ),
         ),
@@ -489,7 +689,9 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
                     child: Text(
                       label,
                       style: TextStyle(
-                        color: isSelected ? colors.sidebarSelectedItemTextColor : colors.sidebarItemTextColor,
+                        color: isSelected
+                            ? colors.sidebarSelectedItemTextColor
+                            : colors.sidebarItemTextColor,
                         fontSize: 11,
                         fontWeight:
                             isSelected ? FontWeight.w600 : FontWeight.w400,
@@ -526,10 +728,14 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
         height: 26,
         padding: EdgeInsets.only(left: indent, right: 10),
         decoration: BoxDecoration(
-          color: isSelected ? colors.sidebarSelectedItemBackgroundColor : Colors.transparent,
+          color: isSelected
+              ? colors.sidebarSelectedItemBackgroundColor
+              : Colors.transparent,
           border: Border(
             left: BorderSide(
-              color: isSelected ? colors.sidebarSelectedIconColor : Colors.transparent,
+              color: isSelected
+                  ? colors.sidebarSelectedIconColor
+                  : Colors.transparent,
               width: 2.5,
             ),
           ),
@@ -548,7 +754,9 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
               child: Text(
                 label,
                 style: TextStyle(
-                  color: isSelected ? colors.sidebarSelectedItemTextColor : colors.sidebarItemTextColor,
+                  color: isSelected
+                      ? colors.sidebarSelectedItemTextColor
+                      : colors.sidebarItemTextColor,
                   fontSize: 11,
                   fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
                 ),
@@ -576,7 +784,9 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
       child: Text(
         '$count',
         style: TextStyle(
-          color: isSelected ? colors.sidebarSelectedBadgeTextColor : colors.sidebarBadgeTextColor,
+          color: isSelected
+              ? colors.sidebarSelectedBadgeTextColor
+              : colors.sidebarBadgeTextColor,
           fontSize: 9,
           fontWeight: FontWeight.bold,
         ),

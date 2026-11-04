@@ -229,6 +229,28 @@ Future<List<TorrentStructure>> getTorrents({
       .toList();
 }
 
+Future<List<StorageTargetModel>> getStorages({
+  String? serverHostUrl,
+}) async {
+  final client = ApiClient.instance;
+  if (serverHostUrl != null &&
+      serverHostUrl.trim().isNotEmpty &&
+      serverHostUrl != 'serverHostUrl') {
+    client.setBaseUrl(serverHostUrl);
+  }
+
+  try {
+    final response = await client.dio.get('${client.baseUrl}/api/storages');
+    final List<dynamic> data = response.data as List<dynamic>;
+
+    return data
+        .map((item) => StorageTargetModel.fromJson(item as Map<String, dynamic>))
+        .toList();
+  } catch (_) {
+    return [];
+  }
+}
+
 Future<TorrentDetailApiItem> getTorrentDetail({
   required String infoHash,
   String? serverHostUrl,
