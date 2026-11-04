@@ -17,11 +17,13 @@ mod ws;
 const DNS_POSITIVE_TTL: Duration = Duration::from_secs(600);
 const DNS_NEGATIVE_TTL: Duration = Duration::from_secs(120);
 
-/// Hardcoded cross-platform DNS servers (Cloudflare & Google).
+/// Hardcoded cross-platform DNS servers.
 /// Can be overridden via config file in the future without any OS dependency.
-const DEFAULT_DNS_SERVERS: [SocketAddr; 2] = [
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53),
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
+const DEFAULT_DNS_SERVERS: [SocketAddr; 4] = [
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53), // Cloudflare
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53), // Google
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53), // Quad9
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(77, 88, 8, 8)), 53), // Yandex
 ];
 
 fn dns_cache() -> &'static Mutex<HashMap<String, (Instant, Option<IpAddr>)>> {
@@ -208,7 +210,7 @@ pub(crate) async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAdd
     let key = trimmed.to_ascii_lowercase();
 
     loop {
-        // 1. Check cache
+        // Check cache
         {
             let mut cache = dns_cache().lock().unwrap();
             if let Some(&(ts, cached)) = cache.get(&key) {
@@ -232,7 +234,7 @@ pub(crate) async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAdd
             }
         }
 
-        // 2. Coalesce concurrent lookups for the same hostname
+        // Coalesce concurrent lookups for the same hostname
         let wait_notify = {
             let mut inflight = inflight_dns().lock().unwrap();
             if let Some(existing) = inflight.get(&key) {
