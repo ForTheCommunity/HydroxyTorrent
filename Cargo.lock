@@ -792,7 +792,6 @@ dependencies = [
  "base64",
  "crossterm",
  "directories",
- "hydroxy_config",
  "ratatui",
  "reqwest",
  "serde",

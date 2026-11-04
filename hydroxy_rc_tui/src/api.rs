@@ -1,7 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
-use hydroxy_config::HydroxyConfig;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -24,33 +23,10 @@ impl SavedSession {
         TuiConfig::session_file_path()
     }
 
-    fn legacy_session_file_path() -> Option<PathBuf> {
-        HydroxyConfig::data_dir()
-            .ok()
-            .map(|d| d.join("tui_session.json"))
-    }
-
     pub fn load() -> Option<Self> {
-        if let Some(path) = Self::session_file_path() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str(&content) {
-                    return Some(session);
-                }
-            }
-        }
-
-        // Migrate from legacy session file if present
-        if let Some(legacy) = Self::legacy_session_file_path() {
-            if let Ok(content) = std::fs::read_to_string(&legacy) {
-                if let Ok(session) = serde_json::from_str::<Self>(&content) {
-                    session.save();
-                    let _ = std::fs::remove_file(legacy);
-                    return Some(session);
-                }
-            }
-        }
-
-        None
+        let path = Self::session_file_path()?;
+        let content = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
     }
 
     pub fn save(&self) {
@@ -67,9 +43,6 @@ impl SavedSession {
     pub fn clear() {
         if let Some(path) = Self::session_file_path() {
             let _ = std::fs::remove_file(path);
-        }
-        if let Some(legacy) = Self::legacy_session_file_path() {
-            let _ = std::fs::remove_file(legacy);
         }
     }
 }

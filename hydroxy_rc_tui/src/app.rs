@@ -4,7 +4,6 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use hydroxy_config::HydroxyConfig;
 
 use crate::{
     api::{ApiClient, SavedSession},
@@ -221,25 +220,15 @@ pub struct App {
 impl App {
     pub fn new(cli_url: Option<String>, cli_user: Option<String>, cli_pass: Option<String>) -> Self {
         let tui_cfg = TuiConfig::load();
-        let daemon_cfg = HydroxyConfig::init().ok();
 
         let default_url = tui_cfg
             .server_url
             .clone()
-            .or_else(|| {
-                daemon_cfg.as_ref().map(|c| {
-                    format!(
-                        "http://{}:{}",
-                        c.remote_config.listen_address, c.remote_config.listen_port
-                    )
-                })
-            })
             .unwrap_or_else(|| "http://127.0.0.1:10000".to_string());
 
         let default_user = tui_cfg
             .username
             .clone()
-            .or_else(|| daemon_cfg.as_ref().map(|c| c.remote_config.username.clone()))
             .unwrap_or_else(|| "admin".to_string());
 
         let saved = SavedSession::load();
