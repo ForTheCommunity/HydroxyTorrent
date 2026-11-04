@@ -31,6 +31,7 @@ class MobileCategoriesDrawer extends StatefulWidget {
 }
 
 class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
+  final Set<String> _expandedStorages = {};
   List<StorageTargetModel> _storages = [];
 
   @override
@@ -378,6 +379,8 @@ class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
     String storageName,
     List<TorrentStructure> torrents,
   ) {
+    final colors = context.appColors;
+    final isExpanded = _expandedStorages.contains(storageName);
     final storageTorrents = torrents
         .where(
           (t) => (t.storage.isEmpty ? 'default' : t.storage) == storageName,
@@ -409,43 +412,184 @@ class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Storage Disk Header
-        _buildCategoryItem(
+        // Storage Disk Header with collapse/expand toggle
+        _buildStorageHeaderItem(
           context: context,
-          filterKey: 'storage:$storageName',
-          displayLabel: storageName,
-          icon: Icons.dns_rounded,
+          storageName: storageName,
           count: storageTorrents.length,
-          isStorageHeader: true,
+          isExpanded: isExpanded,
+          onToggleExpand: () {
+            setState(() {
+              if (isExpanded) {
+                _expandedStorages.remove(storageName);
+              } else {
+                _expandedStorages.add(storageName);
+              }
+            });
+          },
         ),
 
-        // Nested Categories (including empty categories with count 0!)
-        ...allCats.map((cat) {
-          final catCount = storageTorrents.where((t) {
-            final tc = t.category.trim();
-            return tc == cat || tc.startsWith('$cat/');
-          }).length;
+        // Nested Categories (only shown when expanded)
+        if (isExpanded) ...[
+          if (allCats.isEmpty && uncategorizedCount == 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 44, top: 4, bottom: 6),
+              child: Text(
+                'No categories in this storage',
+                style: TextStyle(
+                  color: Color.fromRGBO(
+                    colors.sidebarItemTextColor.red,
+                    colors.sidebarItemTextColor.green,
+                    colors.sidebarItemTextColor.blue,
+                    0.4,
+                  ),
+                  fontSize: 11,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+          ...allCats.map((cat) {
+            final catCount = storageTorrents.where((t) {
+              final tc = t.category.trim();
+              return tc == cat || tc.startsWith('$cat/');
+            }).length;
 
-          return _buildCategoryItem(
-            context: context,
-            filterKey: 'storage:$storageName/category:$cat',
-            displayLabel: cat,
-            icon: Icons.folder_outlined,
-            count: catCount,
-            indent: 28.0,
-          );
-        }),
+            return _buildCategoryItem(
+              context: context,
+              filterKey: 'storage:$storageName/category:$cat',
+              displayLabel: cat,
+              icon: Icons.folder_outlined,
+              count: catCount,
+              indent: 32.0,
+            );
+          }),
 
-        if (uncategorizedCount > 0)
-          _buildCategoryItem(
-            context: context,
-            filterKey: 'storage:$storageName/category:',
-            displayLabel: 'Uncategorized',
-            icon: Icons.folder_off_outlined,
-            count: uncategorizedCount,
-            indent: 28.0,
-          ),
+          if (uncategorizedCount > 0)
+            _buildCategoryItem(
+              context: context,
+              filterKey: 'storage:$storageName/category:',
+              displayLabel: 'Uncategorized',
+              icon: Icons.folder_off_outlined,
+              count: uncategorizedCount,
+              indent: 32.0,
+            ),
+        ],
       ],
+    );
+  }
+
+  Widget _buildStorageHeaderItem({
+    required BuildContext context,
+    required String storageName,
+    required int count,
+    required bool isExpanded,
+    required VoidCallback onToggleExpand,
+  }) {
+    final colors = context.appColors;
+    final filterKey = 'storage:$storageName';
+    final isSelected = widget.selectedFilter == filterKey;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: isSelected
+            ? colors.sidebarSelectedItemBackgroundColor
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          // Expand / Collapse Chevron Button (toggles without closing drawer)
+          InkWell(
+            onTap: onToggleExpand,
+            borderRadius: BorderRadius.circular(6),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8, right: 4, top: 8, bottom: 8),
+              child: Icon(
+                isExpanded
+                    ? Icons.keyboard_arrow_down_rounded
+                    : Icons.keyboard_arrow_right_rounded,
+                size: 20,
+                color: colors.sidebarIconColor,
+              ),
+            ),
+          ),
+          // Storage Filter Click Area (Icon + Name + Count)
+          Expanded(
+            child: InkWell(
+              onTap: () {
+                widget.onFilterSelected(filterKey);
+                Navigator.of(context).pop();
+              },
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 4, right: 12, top: 9, bottom: 9),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.dns_rounded,
+                      size: 18,
+                      color: isSelected
+                          ? colors.accentAmberColor
+                          : colors.accentPurpleColor,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        storageName,
+                        style: TextStyle(
+                          color: isSelected
+                              ? colors.sidebarSelectedItemTextColor
+                              : colors.sidebarItemTextColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? Color.fromRGBO(
+                                colors.accentAmberColor.red,
+                                colors.accentAmberColor.green,
+                                colors.accentAmberColor.blue,
+                                0.2,
+                              )
+                            : Color.fromRGBO(
+                                colors.dividerColor.red,
+                                colors.dividerColor.green,
+                                colors.dividerColor.blue,
+                                0.3,
+                              ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '$count',
+                        style: TextStyle(
+                          color: isSelected
+                              ? colors.accentAmberColor
+                              : Color.fromRGBO(
+                                  colors.sidebarItemTextColor.red,
+                                  colors.sidebarItemTextColor.green,
+                                  colors.sidebarItemTextColor.blue,
+                                  0.7,
+                                ),
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

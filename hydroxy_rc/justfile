@@ -37,7 +37,7 @@ clean:
      
 # For Building Android Apk.
 build_android_apk:
-    clear ; flutter build apk --release
+    clear ; flutter build apk --target-platform android-arm64 --release
 
 # for building web-ui and testing.
 build_release_web:

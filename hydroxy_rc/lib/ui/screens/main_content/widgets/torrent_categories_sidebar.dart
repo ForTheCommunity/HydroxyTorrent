@@ -33,7 +33,7 @@ class TorrentCategoriesSidebar extends StatefulWidget {
 
 class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
   final Set<String> _expandedPaths = {};
-  final Set<String> _expandedStorages = {};
+  final Set<String> _collapsedStorages = {};
   List<StorageTargetModel> _storages = [];
   Timer? _storagesTimer;
   bool _statusExpanded = true;
@@ -62,9 +62,6 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
       if (mounted) {
         setState(() {
           _storages = items;
-          for (final s in items) {
-            _expandedStorages.add(s.name);
-          }
         });
       }
     } catch (_) {}
@@ -202,11 +199,6 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
         };
         if (storageNames.isEmpty) {
           storageNames.add('default');
-        }
-
-        // Auto-expand all storages by default
-        for (final name in storageNames) {
-          _expandedStorages.add(name);
         }
 
         final colors = context.appColors;
@@ -442,7 +434,7 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
     required List<String> knownCategories,
   }) {
     final colors = context.appColors;
-    final isStorageExpanded = _expandedStorages.contains(storageName);
+    final isStorageExpanded = !_collapsedStorages.contains(storageName);
     final filterKey = 'storage:$storageName';
     final isSelected = widget.selectedFilter == filterKey;
     final categoryTree = _buildCategoryTreeForStorage(
@@ -480,14 +472,14 @@ class _TorrentCategoriesSidebarState extends State<TorrentCategoriesSidebar> {
                 onTap: () {
                   setState(() {
                     if (isStorageExpanded) {
-                      _expandedStorages.remove(storageName);
+                      _collapsedStorages.add(storageName);
                     } else {
-                      _expandedStorages.add(storageName);
+                      _collapsedStorages.remove(storageName);
                     }
                   });
                 },
                 child: Container(
-                  width: 18,
+                  width: 20,
                   height: 24,
                   alignment: Alignment.center,
                   child: Icon(
