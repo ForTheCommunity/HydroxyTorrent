@@ -8,6 +8,7 @@ use hydroxy_config::HydroxyConfig;
 
 use crate::{
     api::{ApiClient, SavedSession},
+    config::TuiConfig,
     models::{
         LogLevel, ParsedLogLine, StorageTargetItem, SystemStats, TorrentDetail, TorrentItem,
     },
@@ -219,20 +220,26 @@ pub struct App {
 
 impl App {
     pub fn new(cli_url: Option<String>, cli_user: Option<String>, cli_pass: Option<String>) -> Self {
-        let cfg = HydroxyConfig::init().ok();
-        let default_url = cfg
-            .as_ref()
-            .map(|c| {
-                format!(
-                    "http://{}:{}",
-                    c.remote_config.listen_address, c.remote_config.listen_port
-                )
+        let tui_cfg = TuiConfig::load();
+        let daemon_cfg = HydroxyConfig::init().ok();
+
+        let default_url = tui_cfg
+            .server_url
+            .clone()
+            .or_else(|| {
+                daemon_cfg.as_ref().map(|c| {
+                    format!(
+                        "http://{}:{}",
+                        c.remote_config.listen_address, c.remote_config.listen_port
+                    )
+                })
             })
             .unwrap_or_else(|| "http://127.0.0.1:10000".to_string());
 
-        let default_user = cfg
-            .as_ref()
-            .map(|c| c.remote_config.username.clone())
+        let default_user = tui_cfg
+            .username
+            .clone()
+            .or_else(|| daemon_cfg.as_ref().map(|c| c.remote_config.username.clone()))
             .unwrap_or_else(|| "admin".to_string());
 
         let saved = SavedSession::load();
@@ -245,13 +252,19 @@ impl App {
             .unwrap_or(default_user);
         let saved_token = saved.map(|s| s.token);
 
+        let initial_theme = tui_cfg
+            .theme
+            .as_deref()
+            .and_then(ThemeKind::from_str)
+            .unwrap_or(ThemeKind::Dark);
+
         let api = ApiClient::new(base_url.clone(), saved_token.clone(), Some(username.clone()));
 
         Self {
             api,
             should_quit: false,
             connection_state: ConnectionState::Connecting,
-            theme: ThemeKind::Dark,
+            theme: initial_theme,
             focus: FocusPane::Torrents,
             show_sidebar: true,
             show_details: true,
@@ -809,6 +822,9 @@ impl App {
             }
             KeyCode::Char('t') => {
                 self.theme = self.theme.next();
+                let mut cfg = TuiConfig::load();
+                cfg.theme = Some(self.theme.name().to_string());
+                cfg.save();
                 self.set_toast(format!("Theme: {}", self.theme.name()));
             }
             KeyCode::Char('b') => {

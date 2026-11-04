@@ -1,5 +1,6 @@
 mod api;
 mod app;
+pub mod config;
 mod models;
 mod theme;
 mod ui;

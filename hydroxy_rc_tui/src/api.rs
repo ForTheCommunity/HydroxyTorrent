@@ -5,8 +5,11 @@ use hydroxy_config::HydroxyConfig;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{
-    LoginPayload, LoginResponse, StorageTargetItem, SystemStats, TorrentDetail, TorrentItem,
+use crate::{
+    config::TuiConfig,
+    models::{
+        LoginPayload, LoginResponse, StorageTargetItem, SystemStats, TorrentDetail, TorrentItem,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -18,15 +21,36 @@ pub struct SavedSession {
 
 impl SavedSession {
     fn session_file_path() -> Option<PathBuf> {
+        TuiConfig::session_file_path()
+    }
+
+    fn legacy_session_file_path() -> Option<PathBuf> {
         HydroxyConfig::data_dir()
             .ok()
             .map(|d| d.join("tui_session.json"))
     }
 
     pub fn load() -> Option<Self> {
-        let path = Self::session_file_path()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
+        if let Some(path) = Self::session_file_path() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(session) = serde_json::from_str(&content) {
+                    return Some(session);
+                }
+            }
+        }
+
+        // Migrate from legacy session file if present
+        if let Some(legacy) = Self::legacy_session_file_path() {
+            if let Ok(content) = std::fs::read_to_string(&legacy) {
+                if let Ok(session) = serde_json::from_str::<Self>(&content) {
+                    session.save();
+                    let _ = std::fs::remove_file(legacy);
+                    return Some(session);
+                }
+            }
+        }
+
+        None
     }
 
     pub fn save(&self) {
@@ -43,6 +67,9 @@ impl SavedSession {
     pub fn clear() {
         if let Some(path) = Self::session_file_path() {
             let _ = std::fs::remove_file(path);
+        }
+        if let Some(legacy) = Self::legacy_session_file_path() {
+            let _ = std::fs::remove_file(legacy);
         }
     }
 }
@@ -131,6 +158,11 @@ impl ApiClient {
             token: data.token.clone(),
         }
         .save();
+
+        let mut cfg = TuiConfig::load();
+        cfg.server_url = Some(self.base_url.clone());
+        cfg.username = Some(data.username.clone());
+        cfg.save();
 
         Ok(data)
     }

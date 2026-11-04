@@ -10,6 +10,17 @@ pub enum ThemeKind {
 }
 
 impl ThemeKind {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dark" => Some(Self::Dark),
+            "dracula" => Some(Self::Dracula),
+            "nord" => Some(Self::Nord),
+            "matrix" => Some(Self::Matrix),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Dark => "Dark",
