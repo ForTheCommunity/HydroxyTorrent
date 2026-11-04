@@ -247,18 +247,12 @@ class _TorrentFilesTabState extends State<TorrentFilesTab> {
       }
     }
 
-    // Auto-expand all folders on initial load so user sees structure
+    // Auto-expand only the root container so level-1 files and directories are visible,
+    // while deeper levels remain collapsed by default.
     if (!_hasAutoExpanded && rootNodes.isNotEmpty) {
-      void expandAll(List<FileTreeNode> nodes) {
-        for (final node in nodes) {
-          if (node.isDirectory) {
-            _expandedPaths.add(node.fullPath);
-            expandAll(node.children);
-          }
-        }
+      if (rootNodes.length == 1 && rootNodes.first.isDirectory) {
+        _expandedPaths.add(rootNodes.first.fullPath);
       }
-
-      expandAll(rootNodes);
       _hasAutoExpanded = true;
     }
 
