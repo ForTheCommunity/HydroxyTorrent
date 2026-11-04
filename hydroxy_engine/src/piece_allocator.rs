@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::IpAddr;
 
 pub struct PieceAllocator {
@@ -43,22 +44,23 @@ impl PieceAllocator {
         peer_ip: &IpAddr,
         total_pieces: usize,
     ) -> Option<usize> {
-        self.allocate_piece_excluding(peer_bitfield, peer_ip, total_pieces, None)
+        let empty = HashSet::new();
+        self.allocate_piece_excluding(peer_bitfield, peer_ip, total_pieces, &empty)
     }
 
-    // picking the rarest piece that a peer has (excluding a specific piece index if provided)
+    // picking the rarest piece that a peer has (excluding specific piece indices if provided)
     // & marking it as downloading
     pub fn allocate_piece_excluding(
         &mut self,
         peer_bitfield: &[u8],
         peer_ip: &IpAddr,
         total_pieces: usize,
-        exclude_piece: Option<usize>,
+        exclude_pieces: &HashSet<usize>,
     ) -> Option<usize> {
         let limit = total_pieces.min(self.pieces.len());
         if self.sequential {
             for i in 0..limit {
-                if Some(i) == exclude_piece {
+                if exclude_pieces.contains(&i) {
                     continue;
                 }
                 if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
@@ -75,7 +77,7 @@ impl PieceAllocator {
         let mut best: Option<(usize, u32)> = None;
 
         for i in 0..limit {
-            if Some(i) == exclude_piece {
+            if exclude_pieces.contains(&i) {
                 continue;
             }
             if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
@@ -320,14 +322,45 @@ mod tests {
         assert_eq!(alloc.pieces[1], PieceStatus::Missing);
 
         // Excluding piece 1 returns None when piece 1 is the only missing piece
+        let mut excluded = HashSet::new();
+        excluded.insert(1);
         assert_eq!(
-            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, Some(1)),
+            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, &excluded),
             None
         );
         // Another peer not excluding piece 1 can now allocate it
+        let empty = HashSet::new();
         assert_eq!(
-            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, None),
+            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, &empty),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn test_allocate_excluding_multiple_pieces() {
+        let total = 5;
+        let mut alloc = PieceAllocator::new(total);
+        alloc.sequential = true;
+        let peer_bitfield = vec![0b11111000];
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // When pieces 0 and 1 are excluded, allocation should pick piece 2
+        let mut excluded = HashSet::new();
+        excluded.insert(0);
+        excluded.insert(1);
+        assert_eq!(
+            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, &excluded),
+            Some(2)
+        );
+        alloc.release_piece(2);
+
+        // When all pieces 0, 1, 2, 3, 4 are excluded, returns None
+        for i in 0..5 {
+            excluded.insert(i);
+        }
+        assert_eq!(
+            alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, &excluded),
+            None
         );
     }
 }

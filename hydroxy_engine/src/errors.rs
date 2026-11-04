@@ -27,4 +27,7 @@ pub enum EngineError {
 
     #[error("Peer connection timed out")]
     Timeout,
+
+    #[error("Corrupt data from peer: {0}")]
+    CorruptData(String),
 }

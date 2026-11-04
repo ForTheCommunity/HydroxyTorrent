@@ -41,6 +41,7 @@ enum SpawnPeerOutcome {
     Spawned,
     AlreadyConnected,
     AtCapacity,
+    Banned,
 }
 
 pub struct TorrentTask {
@@ -256,6 +257,10 @@ impl TorrentTask {
         // Track connected peers to avoid spawning duplicate workers
         let connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>> =
             Arc::new(Mutex::new(HashSet::new()));
+        let banned_peers: Arc<Mutex<HashSet<IpAddr>>> =
+            Arc::new(Mutex::new(HashSet::new()));
+        let peer_failed_pieces: Arc<Mutex<HashMap<IpAddr, usize>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         // Broadcast channel for notifying peer workers when pieces complete
         let (have_tx, _) = broadcast::channel::<u32>(128);
@@ -603,6 +608,8 @@ impl TorrentTask {
                                     match Self::spawn_worker_if_new(
                                         &mut worker_set,
                                         &connected_peers,
+                                        &banned_peers,
+                                        &peer_failed_pieces,
                                         peer.clone(),
                                         info_hash,
                                         session_peer_id,
@@ -619,7 +626,9 @@ impl TorrentTask {
                                     )
                                     .await
                                     {
-                                        SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                        SpawnPeerOutcome::Spawned
+                                        | SpawnPeerOutcome::AlreadyConnected
+                                        | SpawnPeerOutcome::Banned => {}
                                         SpawnPeerOutcome::AtCapacity => {
                                             peer_pool.push_front(peer);
                                             break;
@@ -714,6 +723,8 @@ impl TorrentTask {
                                     match Self::spawn_worker_if_new(
                                         &mut worker_set,
                                         &connected_peers,
+                                        &banned_peers,
+                                        &peer_failed_pieces,
                                         peer.clone(),
                                         info_hash,
                                         session_peer_id,
@@ -730,7 +741,9 @@ impl TorrentTask {
                                     )
                                     .await
                                     {
-                                        SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                        SpawnPeerOutcome::Spawned
+                                        | SpawnPeerOutcome::AlreadyConnected
+                                        | SpawnPeerOutcome::Banned => {}
                                         SpawnPeerOutcome::AtCapacity => {
                                             peer_pool.push_front(peer);
                                             break;
@@ -829,6 +842,8 @@ impl TorrentTask {
                         match Self::spawn_worker_if_new(
                             &mut worker_set,
                             &connected_peers,
+                            &banned_peers,
+                            &peer_failed_pieces,
                             peer.clone(),
                             info_hash,
                             session_peer_id,
@@ -845,7 +860,9 @@ impl TorrentTask {
                         )
                         .await
                         {
-                            SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                            SpawnPeerOutcome::Spawned
+                            | SpawnPeerOutcome::AlreadyConnected
+                            | SpawnPeerOutcome::Banned => {}
                             SpawnPeerOutcome::AtCapacity => {
                                 peer_pool.push_front(peer);
                                 break;
@@ -883,6 +900,8 @@ impl TorrentTask {
                         Self::spawn_inbound_worker(
                             &mut worker_set,
                             &connected_peers,
+                            &banned_peers,
+                            &peer_failed_pieces,
                             inbound,
                             info_hash,
                             session_peer_id,
@@ -911,8 +930,10 @@ impl TorrentTask {
                                 break;
                             }
                             let key = (peer.ipv4_addr, peer.port);
+                            let peer_addr = IpAddr::from(peer.ipv4_addr);
                             if !connected.contains(&key)
                                 && !failed_peers.contains_key(&key)
+                                && !banned_peers.lock().await.contains(&peer_addr)
                                 && !peer_pool.iter().any(|p| p.ipv4_addr == peer.ipv4_addr && p.port == peer.port)
                             {
                                 peer_pool.push_back(peer);
@@ -926,6 +947,8 @@ impl TorrentTask {
                             match Self::spawn_worker_if_new(
                                 &mut worker_set,
                                 &connected_peers,
+                                &banned_peers,
+                                &peer_failed_pieces,
                                 peer.clone(),
                                 info_hash,
                                 session_peer_id,
@@ -942,7 +965,9 @@ impl TorrentTask {
                             )
                             .await
                             {
-                                SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                SpawnPeerOutcome::Spawned
+                                | SpawnPeerOutcome::AlreadyConnected
+                                | SpawnPeerOutcome::Banned => {}
                                 SpawnPeerOutcome::AtCapacity => {
                                     peer_pool.push_front(peer);
                                     break;
@@ -976,6 +1001,8 @@ impl TorrentTask {
                                     match Self::spawn_worker_if_new(
                                         &mut worker_set,
                                         &connected_peers,
+                                        &banned_peers,
+                                        &peer_failed_pieces,
                                         next_peer.clone(),
                                         info_hash,
                                         session_peer_id,
@@ -992,7 +1019,9 @@ impl TorrentTask {
                                     )
                                     .await
                                     {
-                                        SpawnPeerOutcome::Spawned | SpawnPeerOutcome::AlreadyConnected => {}
+                                        SpawnPeerOutcome::Spawned
+                                        | SpawnPeerOutcome::AlreadyConnected
+                                        | SpawnPeerOutcome::Banned => {}
                                         SpawnPeerOutcome::AtCapacity => {
                                             peer_pool.push_front(next_peer);
                                             break;
@@ -1218,6 +1247,8 @@ impl TorrentTask {
     async fn spawn_inbound_worker(
         worker_set: &mut JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)>,
         connected_peers: &Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+        banned_peers: &Arc<Mutex<HashSet<IpAddr>>>,
+        peer_failed_pieces: &Arc<Mutex<HashMap<IpAddr, usize>>>,
         inbound: InboundConnection,
         info_hash: [u8; 20],
         session_peer_id: [u8; 20],
@@ -1233,6 +1264,11 @@ impl TorrentTask {
         peer_tx: mpsc::Sender<Vec<Peer>>,
     ) -> bool {
         let key = (inbound.peer_ip, inbound.peer_port);
+        let peer_addr = IpAddr::from(inbound.peer_ip);
+        if banned_peers.lock().await.contains(&peer_addr) {
+            warn!("Rejecting inbound connection from banned peer: {}", peer_addr);
+            return false;
+        }
         {
             let mut connected = connected_peers.lock().await;
             if connected.len() >= MAX_CONNECTED_PEERS_PER_TORRENT {
@@ -1255,6 +1291,8 @@ impl TorrentTask {
         let remote_peer_id = inbound.remote_peer_id;
         let supports_extensions = inbound.supports_extensions;
         let connected_peers_clone = Arc::clone(connected_peers);
+        let banned_peers_clone = Arc::clone(banned_peers);
+        let peer_failed_pieces_clone = Arc::clone(peer_failed_pieces);
 
         worker_set.spawn(async move {
             let worker = PeerWorker {
@@ -1290,7 +1328,9 @@ impl TorrentTask {
                 last_sent_pex_peers: HashSet::new(),
                 active_piece_guard: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
                 last_block_time: None,
-                last_stalled_piece: None,
+                failed_pieces: HashMap::new(),
+                banned_peers: banned_peers_clone,
+                peer_failed_pieces: peer_failed_pieces_clone,
             };
 
             let result = worker.start_inbound(stream, remote_peer_id).await;
@@ -1314,6 +1354,8 @@ impl TorrentTask {
     async fn spawn_worker_if_new(
         worker_set: &mut JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)>,
         connected_peers: &Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+        banned_peers: &Arc<Mutex<HashSet<IpAddr>>>,
+        peer_failed_pieces: &Arc<Mutex<HashMap<IpAddr, usize>>>,
         peer: Peer,
         info_hash: [u8; 20],
         session_peer_id: [u8; 20],
@@ -1329,6 +1371,10 @@ impl TorrentTask {
         peer_tx: mpsc::Sender<Vec<Peer>>,
     ) -> SpawnPeerOutcome {
         let key = (peer.ipv4_addr, peer.port);
+        let peer_addr = IpAddr::from(peer.ipv4_addr);
+        if banned_peers.lock().await.contains(&peer_addr) {
+            return SpawnPeerOutcome::Banned;
+        }
         {
             let mut connected = connected_peers.lock().await;
             if connected.contains(&key) {
@@ -1349,6 +1395,8 @@ impl TorrentTask {
         let peer_port = peer.port;
         let have_rx = have_tx.subscribe();
         let connected_peers_clone = Arc::clone(connected_peers);
+        let banned_peers_clone = Arc::clone(banned_peers);
+        let peer_failed_pieces_clone = Arc::clone(peer_failed_pieces);
 
         worker_set.spawn(async move {
             let worker = PeerWorker {
@@ -1384,7 +1432,9 @@ impl TorrentTask {
                 last_sent_pex_peers: HashSet::new(),
                 active_piece_guard: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
                 last_block_time: None,
-                last_stalled_piece: None,
+                failed_pieces: HashMap::new(),
+                banned_peers: banned_peers_clone,
+                peer_failed_pieces: peer_failed_pieces_clone,
             };
 
             let result = worker.start().await;

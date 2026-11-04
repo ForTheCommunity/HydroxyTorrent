@@ -1,6 +1,6 @@
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr},
     sync::{
         Arc,
@@ -30,7 +30,9 @@ use crate::{
 use hydroxy_utils::{parse_peer_id, torrent_info::OtherInfos};
 
 const PIECE_STALL_TIMEOUT: Duration = Duration::from_secs(20);
-const STALLED_PIECE_COOLDOWN: Duration = Duration::from_secs(5);
+const BASE_PIECE_COOLDOWN: Duration = Duration::from_secs(5);
+const MAX_PIECE_COOLDOWN: Duration = Duration::from_secs(300);
+const MAX_VERIFICATION_ATTEMPTS: usize = 5;
 const IDLE_UNCHOKED_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_CHOKED_WAIT_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -103,10 +105,21 @@ pub struct PeerWorker {
     pub last_sent_pex_peers: HashSet<(Ipv4Addr, u16)>,
     pub active_piece_guard: Arc<AtomicU32>,
     pub last_block_time: Option<Instant>,
-    pub last_stalled_piece: Option<(u32, Instant)>,
+    pub failed_pieces: HashMap<u32, (usize, Instant)>,
+    pub banned_peers: Arc<Mutex<HashSet<IpAddr>>>,
+    pub peer_failed_pieces: Arc<Mutex<HashMap<IpAddr, usize>>>,
 }
 
 impl PeerWorker {
+    pub fn calculate_piece_backoff(attempts: usize) -> Duration {
+        let exp = (attempts.saturating_sub(1) as u32).min(6);
+        let secs = BASE_PIECE_COOLDOWN
+            .as_secs()
+            .saturating_mul(1 << exp)
+            .min(MAX_PIECE_COOLDOWN.as_secs());
+        Duration::from_secs(secs)
+    }
+
     pub async fn start(mut self) -> Result<(), EngineError> {
         let socket_addr = std::net::SocketAddr::new(self.ip_addr, self.port);
         let mut tcp_stream = tokio::time::timeout(
@@ -318,7 +331,19 @@ impl PeerWorker {
                         .lock()
                         .await
                         .release_piece(piece_idx as usize);
-                    self.last_stalled_piece = Some((piece_idx, Instant::now()));
+                    let entry = self
+                        .failed_pieces
+                        .entry(piece_idx)
+                        .or_insert((0, Instant::now()));
+                    entry.0 += 1;
+                    entry.1 = Instant::now();
+                    let cooldown = Self::calculate_piece_backoff(entry.0);
+                    if entry.0 >= MAX_VERIFICATION_ATTEMPTS {
+                        warn!(
+                            "Piece {} stalled {} times (threshold {} reached) — applying exponential backoff ({:?})",
+                            piece_idx, entry.0, MAX_VERIFICATION_ATTEMPTS, cooldown
+                        );
+                    }
                 }
             }
 
@@ -579,7 +604,42 @@ impl PeerWorker {
                     .map_err(|e| EngineError::Error(format!("SHA1 task join error: {}", e)))?;
 
                     if !is_valid {
-                        warn!("Piece {} failed SHA1 — releasing back to pool", index);
+                        // 1. Record failed piece attempt and backoff
+                        let entry = self
+                            .failed_pieces
+                            .entry(index)
+                            .or_insert((0, Instant::now()));
+                        entry.0 += 1;
+                        entry.1 = Instant::now();
+                        let attempts = entry.0;
+                        let cooldown = Self::calculate_piece_backoff(attempts);
+
+                        // 2. Track failed piece counts per ip_addr
+                        let total_peer_failures = {
+                            let mut failures = self.peer_failed_pieces.lock().await;
+                            let count = failures.entry(self.ip_addr).or_insert(0);
+                            *count += 1;
+                            *count
+                        };
+
+                        // 3. Ban peer from reconnecting for this session
+                        {
+                            let mut banned = self.banned_peers.lock().await;
+                            banned.insert(self.ip_addr);
+                        }
+
+                        warn!(
+                            "Piece {} failed SHA1 verification (attempt {}/{}, cooldown {:?}) from peer {}:{}. Peer penalized (total failures: {}), banned from session, and disconnected.",
+                            index,
+                            attempts,
+                            MAX_VERIFICATION_ATTEMPTS,
+                            cooldown,
+                            self.ip_addr,
+                            self.port,
+                            total_peer_failures
+                        );
+
+                        // 4. Clean up state and release piece back to allocator
                         self.set_current_piece(None);
                         self.last_block_time = None;
                         self.pending_requests = 0;
@@ -589,10 +649,15 @@ impl PeerWorker {
                             .lock()
                             .await
                             .release_piece(index as usize);
-                        self.last_stalled_piece = Some((index, Instant::now()));
-                        self.try_start_downloading(out_tx).await?;
-                        return Ok(());
+
+                        // 5. Terminate worker to immediately disconnect this peer
+                        return Err(EngineError::CorruptData(format!(
+                            "Peer {}:{} disconnected and banned: SHA1 verification failed on piece {}",
+                            self.ip_addr, self.port, index
+                        )));
                     }
+
+                    self.failed_pieces.remove(&index);
 
                     // write to disk without cloning FileRegion vector
                     PieceIO::write_piece_to_disk(
@@ -807,19 +872,19 @@ impl PeerWorker {
             return Ok(());
         }
 
-        let exclude_piece = match self.last_stalled_piece {
-            Some((idx, ts)) if ts.elapsed() < STALLED_PIECE_COOLDOWN => Some(idx as usize),
-            _ => {
-                self.last_stalled_piece = None;
-                None
+        let mut exclude_pieces = HashSet::new();
+        for (&piece_idx, &(attempts, ts)) in &self.failed_pieces {
+            let cooldown = Self::calculate_piece_backoff(attempts);
+            if ts.elapsed() < cooldown {
+                exclude_pieces.insert(piece_idx as usize);
             }
-        };
+        }
 
         let piece_idx = self.piece_allocator.lock().await.allocate_piece_excluding(
             &self.peer_state.bitfield,
             &self.ip_addr,
             self.total_pieces,
-            exclude_piece,
+            &exclude_pieces,
         );
 
         if let Some(piece_idx) = piece_idx {
@@ -878,5 +943,23 @@ impl PeerWorker {
             .sum::<usize>()
             .min(self.total_pieces);
         (count as f64 / self.total_pieces as f64) * 100.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_piece_backoff_exponential() {
+        assert_eq!(PeerWorker::calculate_piece_backoff(0), Duration::from_secs(5));
+        assert_eq!(PeerWorker::calculate_piece_backoff(1), Duration::from_secs(5));
+        assert_eq!(PeerWorker::calculate_piece_backoff(2), Duration::from_secs(10));
+        assert_eq!(PeerWorker::calculate_piece_backoff(3), Duration::from_secs(20));
+        assert_eq!(PeerWorker::calculate_piece_backoff(4), Duration::from_secs(40));
+        assert_eq!(PeerWorker::calculate_piece_backoff(5), Duration::from_secs(80));
+        assert_eq!(PeerWorker::calculate_piece_backoff(6), Duration::from_secs(160));
+        assert_eq!(PeerWorker::calculate_piece_backoff(7), Duration::from_secs(300)); // capped
+        assert_eq!(PeerWorker::calculate_piece_backoff(10), Duration::from_secs(300)); // capped
     }
 }
