@@ -1,0 +1,3 @@
+# Hydroxy-DHT
+
+### This Lib-Crate contains the implementation of DHT ([Distributed Hash Table](https://en.wikipedia.org/wiki/Distributed_hash_table)) for HydroxyTorrent...
