@@ -110,7 +110,7 @@ pub fn compact_peer_encode(ip_v4_addr: &SocketAddrV4) -> [u8; 6] {
 }
 
 /// Decodes encoded 6-bytes IPv4 Addr (BEP 5 / 23).
-pub fn compact_peer_decode(enc_bytes: &[u8; 6]) -> Option<SocketAddrV4> {
+pub fn compact_peer_decode(enc_bytes: &[u8]) -> Option<SocketAddrV4> {
     if enc_bytes.len() != 6 {
         return None;
     }
