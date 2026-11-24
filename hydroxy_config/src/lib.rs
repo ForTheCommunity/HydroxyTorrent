@@ -49,8 +49,8 @@ fn default_true() -> bool {
     true
 }
 
-fn default_zero_u16() -> u16 {
-    0
+fn default_dht_port() -> u16 {
+    9999
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -59,7 +59,7 @@ pub struct NetworkConfig {
     pub listen_port: u16,
     #[serde(default = "default_true")]
     pub dht_enabled: bool,
-    #[serde(default = "default_zero_u16")]
+    #[serde(default = "default_dht_port")]
     pub dht_port: u16,
     #[serde(default)]
     pub dht_bootstrap_routers: Vec<String>,

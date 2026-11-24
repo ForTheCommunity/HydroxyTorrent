@@ -221,6 +221,11 @@ impl PeerMessage {
 
             9 => {
                 // BEP 0005: DHT port message (len=3, id=9, 2-byte port)
+                if payload_length < 2 {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Invalid payload length for Port".into(),
+                    ));
+                }
                 let mut port_bytes = [0u8; 2];
                 tcp_stream
                     .read_exact(&mut port_bytes)

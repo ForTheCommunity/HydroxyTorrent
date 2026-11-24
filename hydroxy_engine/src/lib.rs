@@ -70,11 +70,7 @@ impl HydroxyEngine {
                 std::net::IpAddr::V4(v4) => v4,
                 std::net::IpAddr::V6(_) => std::net::Ipv4Addr::UNSPECIFIED,
             };
-            let dht_port = if config.network_config.dht_port != 0 {
-                config.network_config.dht_port
-            } else {
-                listen_port
-            };
+            let dht_port = config.network_config.dht_port;
 
             let bootstrap_routers = if config.network_config.dht_bootstrap_routers.is_empty() {
                 hydroxy_dht::DEFAULT_BOOTSTRAP_ROUTERS
@@ -87,7 +83,7 @@ impl HydroxyEngine {
 
             let dht_cfg = hydroxy_dht::DHTConfig {
                 bind_addr: std::net::SocketAddrV4::new(bind_ip, dht_port),
-                bootstrap_routers: bootstrap_routers.clone(),
+                bootstrap_routers,
                 ..Default::default()
             };
 
@@ -108,33 +104,10 @@ impl HydroxyEngine {
                 Err(e) => {
                     warn!(
                         target: "major",
-                        "Failed to bind DHT on port {}, trying ephemeral port: {}",
+                        "Failed to start DHT node on UDP port {}: {}",
                         dht_port, e
                     );
-                    let fallback_cfg = hydroxy_dht::DHTConfig {
-                        bind_addr: std::net::SocketAddrV4::new(bind_ip, 0),
-                        bootstrap_routers,
-                        ..Default::default()
-                    };
-                    match hydroxy_dht::DHTNode::start(fallback_cfg).await {
-                        Ok((node, handle)) => {
-                            let shutdown_notify = control_registry.shutdown_notify();
-                            tokio::spawn(async move {
-                                shutdown_notify.notified().await;
-                                node.shutdown();
-                            });
-                            info!(
-                                target: "major",
-                                "DHT node started on ephemeral UDP port {}",
-                                handle.local_addr().map(|a| a.port()).unwrap_or(0)
-                            );
-                            Some(handle)
-                        }
-                        Err(err) => {
-                            warn!(target: "major", "Failed to start DHT node: {}", err);
-                            None
-                        }
-                    }
+                    None
                 }
             }
         } else {

@@ -67,6 +67,7 @@ impl Default for DHTConfig {
 pub struct DHTNode {
     inner: Arc<DHTInner>,
     shutdown_tx: Option<oneshot::Sender<()>>,
+    recv_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub struct DHTInner {
@@ -113,7 +114,7 @@ impl DHTNode {
 
         // Spawn receive & dispatch loop
         let recv_inner = Arc::clone(&inner);
-        tokio::spawn(async move {
+        let recv_handle = tokio::spawn(async move {
             Self::receive_loop(recv_inner).await;
         });
 
@@ -137,6 +138,7 @@ impl DHTNode {
             DHTNode {
                 inner,
                 shutdown_tx: Some(shutdown_tx),
+                recv_handle: Some(recv_handle),
             },
             handle,
         ))
@@ -151,6 +153,9 @@ impl DHTNode {
     pub fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
+        }
+        if let Some(handle) = self.recv_handle.take() {
+            handle.abort();
         }
     }
 
