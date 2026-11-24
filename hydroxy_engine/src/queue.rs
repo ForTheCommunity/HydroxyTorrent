@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +159,9 @@ impl DownloadQueueManager {
         let can_promote = inner.can_promote();
 
         if can_promote {
-            inner.active.insert(info_hash, TorrentActivityClassification::FastOrTesting);
+            inner
+                .active
+                .insert(info_hash, TorrentActivityClassification::FastOrTesting);
             let (_, rx) = mpsc::channel(1);
             info!(
                 "Torrent {} acquired active download slot (fast active: {}/{}, total active: {})",
@@ -188,7 +190,12 @@ impl DownloadQueueManager {
     /// If speed drops below the slow threshold for >= slow_inactive_duration, it transitions to Slow,
     /// freeing a fast slot for waiting torrents.
     /// If speed recovers >= slow threshold, it returns to FastOrTesting.
-    pub async fn report_speed(&self, info_hash: &[u8; 20], speed: f64, is_below_threshold_for_timer: bool) {
+    pub async fn report_speed(
+        &self,
+        info_hash: &[u8; 20],
+        speed: f64,
+        is_below_threshold_for_timer: bool,
+    ) {
         let mut inner = self.inner.lock().await;
         let slow_dl_threshold = inner.slow_dl_threshold;
         let dont_count_slow_torrents = inner.dont_count_slow_torrents;
@@ -294,7 +301,9 @@ impl DownloadQueueManager {
             };
 
             if let Some(notifier) = inner.notifiers.remove(&next_hash) {
-                inner.active.insert(next_hash, TorrentActivityClassification::FastOrTesting);
+                inner
+                    .active
+                    .insert(next_hash, TorrentActivityClassification::FastOrTesting);
                 info!(
                     "Promoted queued torrent {} to active download (fast active: {}/{}, total active: {})",
                     hydroxy_utils::torrent_info::OtherInfos::to_sha1(&next_hash),
@@ -453,7 +462,10 @@ mod tests {
 
         assert!(active1);
         assert!(active2);
-        assert!(!active3, "Third torrent must wait when 2 fast slots are occupied");
+        assert!(
+            !active3,
+            "Third torrent must wait when 2 fast slots are occupied"
+        );
 
         {
             let inner = q.inner.lock().await;
@@ -474,10 +486,19 @@ mod tests {
             let inner = q.inner.lock().await;
             // hash1 is still active and downloading!
             assert!(inner.active.contains_key(&hash1));
-            assert_eq!(inner.active.get(&hash1), Some(&TorrentActivityClassification::Slow));
+            assert_eq!(
+                inner.active.get(&hash1),
+                Some(&TorrentActivityClassification::Slow)
+            );
             // hash2 and hash3 are fast active
-            assert_eq!(inner.active.get(&hash2), Some(&TorrentActivityClassification::FastOrTesting));
-            assert_eq!(inner.active.get(&hash3), Some(&TorrentActivityClassification::FastOrTesting));
+            assert_eq!(
+                inner.active.get(&hash2),
+                Some(&TorrentActivityClassification::FastOrTesting)
+            );
+            assert_eq!(
+                inner.active.get(&hash3),
+                Some(&TorrentActivityClassification::FastOrTesting)
+            );
             // Fast count is 2 (hash2 + hash3), total active is 3 (hash1 + hash2 + hash3)
             assert_eq!(inner.fast_count(), 2);
             assert_eq!(inner.active.len(), 3);
@@ -488,7 +509,10 @@ mod tests {
         q.report_speed(&hash1, 51_200.0, false).await;
         {
             let inner = q.inner.lock().await;
-            assert_eq!(inner.active.get(&hash1), Some(&TorrentActivityClassification::FastOrTesting));
+            assert_eq!(
+                inner.active.get(&hash1),
+                Some(&TorrentActivityClassification::FastOrTesting)
+            );
             assert_eq!(inner.fast_count(), 3);
         }
     }
@@ -518,7 +542,10 @@ mod tests {
         q.release_download_slot(&hash1).await;
 
         let res = rx2.recv().await;
-        assert_eq!(res, None, "channel should be closed because notifier was dropped on cancel");
+        assert_eq!(
+            res, None,
+            "channel should be closed because notifier was dropped on cancel"
+        );
     }
 
     #[tokio::test]
@@ -540,7 +567,8 @@ mod tests {
     async fn test_strict_max_active_limit_enforced() {
         // Test with dont_count_slow_torrents = false for strict limit enforcement
         let max_active = 15;
-        let q = DownloadQueueManager::with_config(max_active, false, 10_240.0, Duration::from_secs(60));
+        let q =
+            DownloadQueueManager::with_config(max_active, false, 10_240.0, Duration::from_secs(60));
 
         // Queue 50 torrents
         let mut rxs = Vec::new();
@@ -549,7 +577,10 @@ mod tests {
             hash[0] = (i + 1) as u8;
             let (active, rx) = q.acquire_download_slot(hash).await;
             if i < 15 {
-                assert!(active, "First 15 torrents must acquire active slot immediately");
+                assert!(
+                    active,
+                    "First 15 torrents must acquire active slot immediately"
+                );
             } else {
                 assert!(!active, "Torrents beyond 15 must be queued");
                 rxs.push((hash, rx));
@@ -558,7 +589,11 @@ mod tests {
 
         {
             let inner = q.inner.lock().await;
-            assert_eq!(inner.active.len(), 15, "Active count must strictly equal 15");
+            assert_eq!(
+                inner.active.len(),
+                15,
+                "Active count must strictly equal 15"
+            );
             assert_eq!(inner.waiting.len(), 35, "Waiting count must equal 35");
         }
 
@@ -576,7 +611,11 @@ mod tests {
 
         {
             let inner = q.inner.lock().await;
-            assert_eq!(inner.active.len(), 15, "Active count must remain strictly 15");
+            assert_eq!(
+                inner.active.len(),
+                15,
+                "Active count must remain strictly 15"
+            );
             assert!(inner.active.contains_key(&promoted_hash));
             assert!(!inner.active.contains_key(&finished_hash));
             assert_eq!(inner.waiting.len(), 34);

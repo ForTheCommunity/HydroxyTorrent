@@ -18,6 +18,12 @@ pub struct TorrentInfo {
     pub other_infos: OtherInfos,
 }
 
+impl TorrentInfo {
+    pub fn is_private(&self) -> bool {
+        self.info.is_private()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Info {
     // this is name of the torrent.
@@ -32,6 +38,14 @@ pub struct Info {
     pub piece_length: usize,
     pub pieces: Vec<u8>,
     pub source: String,
+    // BEP 0027: Private torrents
+    pub private: Option<usize>,
+}
+
+impl Info {
+    pub fn is_private(&self) -> bool {
+        self.private == Some(1)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +244,12 @@ impl TorrentInfo {
             _ => "N/A".into(),
         };
 
+        // extracting private field (BEP 0027)
+        let private = match info_dict.get(&b"private"[..]) {
+            Some(BencodedValue::Integer(val)) => Some(*val as usize),
+            _ => None,
+        };
+
         // extracting url-list
         let mut url_list: Vec<String> = Vec::new();
         match root_dictionary.get(&b"url-list"[..]) {
@@ -260,6 +280,7 @@ impl TorrentInfo {
                 piece_length,
                 pieces,
                 source,
+                private,
             },
             url_list,
             other_infos: OtherInfos {

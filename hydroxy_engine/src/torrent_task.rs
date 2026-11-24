@@ -1,10 +1,10 @@
-
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddrV4},
     sync::Arc,
 };
 
+use hydroxy_dht::DHTHandle;
 use hydroxy_state::TorrentState;
 use hydroxy_storage_io::file_region::FileRegion;
 use hydroxy_tracker::{Peer, Tracker, TrackerEvents};
@@ -55,6 +55,7 @@ pub struct TorrentTask {
     pub listen_port: u16,
     pub inbound_registry: Arc<InboundTorrentRegistry>,
     pub queue_manager: Arc<DownloadQueueManager>,
+    pub dht_handle: Option<DHTHandle>,
 }
 
 impl TorrentTask {
@@ -77,7 +78,8 @@ impl TorrentTask {
         let (active_root_dir, mut is_in_temp) = match &self.temp_dir {
             Some(temp) if !temp.trim().is_empty() => {
                 let temp_path = std::path::Path::new(temp).join(&torrent_info.info.name);
-                let final_path = std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
+                let final_path =
+                    std::path::Path::new(&self.final_dir).join(&torrent_info.info.name);
 
                 if temp_path.exists() {
                     (temp.clone(), true)
@@ -112,7 +114,9 @@ impl TorrentTask {
             trackers.push(torrent_announce.trim().to_string());
         }
 
-        let tracker_stats: Vec<TrackerStats> = trackers
+        let is_private = torrent_info.is_private();
+
+        let mut tracker_stats: Vec<TrackerStats> = trackers
             .iter()
             .enumerate()
             .map(|(i, url)| TrackerStats {
@@ -124,6 +128,17 @@ impl TorrentTask {
                 next_announce: 0,
             })
             .collect();
+
+        if !is_private && self.dht_handle.is_some() {
+            tracker_stats.push(TrackerStats {
+                tier: tracker_stats.len() + 1,
+                url: "[DHT]".to_string(),
+                status: "Updating...".to_string(),
+                peers: 0,
+                interval: 120,
+                next_announce: 0,
+            });
+        }
 
         let file_stats: Vec<TorrentFileStats> = {
             let map = file_map.read().await;
@@ -175,7 +190,8 @@ impl TorrentTask {
 
         // When a new torrent is added (or state had no verified pieces) and files exist on disk, recheck them
         if any_file_exists && !has_saved_pieces {
-            self.stats_registry.set_status(&info_hash_sha1, Some("checking".to_string()));
+            self.stats_registry
+                .set_status(&info_hash_sha1, Some("checking".to_string()));
             let map_guard = file_map.read().await;
             let recheck = crate::piece_verifier::verify_torrent_data_on_disk(
                 &*map_guard,
@@ -236,7 +252,8 @@ impl TorrentTask {
         let mut is_paused = hot_state.paused == 1;
         let is_sequential = hot_state.sequential == 1;
         piece_allocator.lock().await.sequential = is_sequential;
-        self.stats_registry.set_sequential(&info_hash_sha1, is_sequential);
+        self.stats_registry
+            .set_sequential(&info_hash_sha1, is_sequential);
 
         let all_done = piece_allocator.lock().await.all_complete();
         if all_done && is_in_temp {
@@ -273,12 +290,14 @@ impl TorrentTask {
                 "Torrent complete and seeding: ({})",
                 info_hash_sha1
             );
-            self.stats_registry.set_status(&info_hash_sha1, Some("seeding".to_string()));
+            self.stats_registry
+                .set_status(&info_hash_sha1, Some("seeding".to_string()));
             is_active_for_announce.store(true, std::sync::atomic::Ordering::Relaxed);
             let (_, rx) = mpsc::channel(1);
             (rx, false)
         } else if is_paused {
-            self.stats_registry.set_status(&info_hash_sha1, Some("paused".to_string()));
+            self.stats_registry
+                .set_status(&info_hash_sha1, Some("paused".to_string()));
             let (_, rx) = mpsc::channel(1);
             (rx, false)
         } else {
@@ -289,7 +308,8 @@ impl TorrentTask {
                 self.stats_registry.set_status(&info_hash_sha1, None); // "downloading"
             } else {
                 has_download_slot = false;
-                self.stats_registry.set_status(&info_hash_sha1, Some("queued".to_string()));
+                self.stats_registry
+                    .set_status(&info_hash_sha1, Some("queued".to_string()));
             }
             (rx, active)
         };
@@ -309,8 +329,7 @@ impl TorrentTask {
         // Track connected peers to avoid spawning duplicate workers
         let connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>> =
             Arc::new(Mutex::new(HashSet::new()));
-        let banned_peers: Arc<Mutex<HashSet<IpAddr>>> =
-            Arc::new(Mutex::new(HashSet::new()));
+        let banned_peers: Arc<Mutex<HashSet<IpAddr>>> = Arc::new(Mutex::new(HashSet::new()));
         let peer_failed_pieces: Arc<Mutex<HashMap<IpAddr, usize>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -360,6 +379,28 @@ impl TorrentTask {
             });
         }
 
+        // Announce to DHT for trackerless peer discovery (BEP 0005) if enabled and not private
+        if !is_paused && (all_done || is_active_now) && !is_private {
+            if let Some(dht) = self.dht_handle.clone() {
+                let dht_hash = info_hash;
+                let dht_port = self.listen_port;
+                let dht_peer_tx = new_peer_tx.clone();
+                let dht_stats = Arc::clone(&self.stats_registry);
+                let dht_hash_sha1 = info_hash_sha1.clone();
+                tokio::spawn(async move {
+                    Self::announce_dht(
+                        dht,
+                        dht_hash,
+                        dht_port,
+                        dht_peer_tx,
+                        dht_stats,
+                        dht_hash_sha1,
+                    )
+                    .await;
+                });
+            }
+        }
+
         // Spawn periodic re-announce background task
         let re_announce_trackers = trackers.clone();
         let re_announce_info_hash = info_hash;
@@ -370,6 +411,11 @@ impl TorrentTask {
         let re_announce_port = self.listen_port;
         let initially_complete = all_done;
         let re_announce_active = Arc::clone(&is_active_for_announce);
+        let re_announce_dht = if !is_private {
+            self.dht_handle.clone()
+        } else {
+            None
+        };
 
         let re_announce_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
@@ -448,6 +494,26 @@ impl TorrentTask {
                         &re_announce_peer_tx,
                     )
                     .await;
+                }
+
+                if let Some(ref dht) = re_announce_dht {
+                    let dht_clone = dht.clone();
+                    let dht_hash = re_announce_info_hash;
+                    let dht_port = re_announce_port;
+                    let dht_peer_tx = re_announce_peer_tx.clone();
+                    let dht_stats = Arc::clone(&re_announce_stats);
+                    let dht_hash_sha1 = re_announce_info_hash_sha1.clone();
+                    tokio::spawn(async move {
+                        Self::announce_dht(
+                            dht_clone,
+                            dht_hash,
+                            dht_port,
+                            dht_peer_tx,
+                            dht_stats,
+                            dht_hash_sha1,
+                        )
+                        .await;
+                    });
                 }
             }
         });
@@ -750,6 +816,8 @@ impl TorrentTask {
                                         &self.stats_registry,
                                         have_tx.clone(),
                                         new_peer_tx.clone(),
+                                        self.dht_handle.clone(),
+                                        is_private,
                                     )
                                     .await
                                     {
@@ -763,34 +831,57 @@ impl TorrentTask {
                                     }
                                 }
 
-                                if worker_set.len() < MAX_CONNECTED_PEERS_PER_TORRENT / 2 && !trackers.is_empty() {
-                                    let (dl, rem) = {
-                                        let alloc = piece_allocator.lock().await;
-                                        (
-                                            alloc.downloaded_bytes(piece_length, total_torrent_size),
-                                            alloc.remaining_bytes(piece_length, total_torrent_size),
-                                        )
-                                    };
-                                    let resume_trackers = trackers.clone();
-                                    let resume_stats = Arc::clone(&self.stats_registry);
-                                    let resume_hash_sha1 = info_hash_sha1.clone();
-                                    let resume_peer_tx = new_peer_tx.clone();
-                                    let resume_port = self.listen_port;
-                                    tokio::spawn(async move {
-                                        Self::announce_to_trackers_stream(
-                                            &resume_trackers,
-                                            &info_hash,
-                                            session_peer_id,
-                                            resume_port,
-                                            dl,
-                                            0,
-                                            rem,
-                                            None,
-                                            Some((&resume_stats, &resume_hash_sha1)),
-                                            &resume_peer_tx,
-                                        )
-                                        .await;
-                                    });
+                                if worker_set.len() < MAX_CONNECTED_PEERS_PER_TORRENT / 2 {
+                                    if !trackers.is_empty() {
+                                        let (dl, rem) = {
+                                            let alloc = piece_allocator.lock().await;
+                                            (
+                                                alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                                alloc.remaining_bytes(piece_length, total_torrent_size),
+                                            )
+                                        };
+                                        let resume_trackers = trackers.clone();
+                                        let resume_stats = Arc::clone(&self.stats_registry);
+                                        let resume_hash_sha1 = info_hash_sha1.clone();
+                                        let resume_peer_tx = new_peer_tx.clone();
+                                        let resume_port = self.listen_port;
+                                        tokio::spawn(async move {
+                                            Self::announce_to_trackers_stream(
+                                                &resume_trackers,
+                                                &info_hash,
+                                                session_peer_id,
+                                                resume_port,
+                                                dl,
+                                                0,
+                                                rem,
+                                                None,
+                                                Some((&resume_stats, &resume_hash_sha1)),
+                                                &resume_peer_tx,
+                                            )
+                                            .await;
+                                        });
+                                    }
+
+                                    if !is_private {
+                                        if let Some(dht) = self.dht_handle.clone() {
+                                            let dht_hash = info_hash;
+                                            let dht_port = self.listen_port;
+                                            let dht_peer_tx = new_peer_tx.clone();
+                                            let dht_stats = Arc::clone(&self.stats_registry);
+                                            let dht_hash_sha1 = info_hash_sha1.clone();
+                                            tokio::spawn(async move {
+                                                Self::announce_dht(
+                                                    dht,
+                                                    dht_hash,
+                                                    dht_port,
+                                                    dht_peer_tx,
+                                                    dht_stats,
+                                                    dht_hash_sha1,
+                                                )
+                                                .await;
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -894,6 +985,8 @@ impl TorrentTask {
                                         &self.stats_registry,
                                         have_tx.clone(),
                                         new_peer_tx.clone(),
+                                        self.dht_handle.clone(),
+                                        is_private,
                                     )
                                     .await
                                     {
@@ -907,34 +1000,57 @@ impl TorrentTask {
                                     }
                                 }
 
-                                if peer_pool.is_empty() && worker_set.is_empty() && !trackers.is_empty() {
-                                    let (dl, rem) = {
-                                        let alloc = piece_allocator.lock().await;
-                                        (
-                                            alloc.downloaded_bytes(piece_length, total_torrent_size),
-                                            alloc.remaining_bytes(piece_length, total_torrent_size),
-                                        )
-                                    };
-                                    let resume_trackers = trackers.clone();
-                                    let resume_stats = Arc::clone(&self.stats_registry);
-                                    let resume_hash_sha1 = info_hash_sha1.clone();
-                                    let resume_peer_tx = new_peer_tx.clone();
-                                    let resume_port = self.listen_port;
-                                    tokio::spawn(async move {
-                                        Self::announce_to_trackers_stream(
-                                            &resume_trackers,
-                                            &info_hash,
-                                            session_peer_id,
-                                            resume_port,
-                                            dl,
-                                            0,
-                                            rem,
-                                            None,
-                                            Some((&resume_stats, &resume_hash_sha1)),
-                                            &resume_peer_tx,
-                                        )
-                                        .await;
-                                    });
+                                if peer_pool.is_empty() && worker_set.is_empty() {
+                                    if !trackers.is_empty() {
+                                        let (dl, rem) = {
+                                            let alloc = piece_allocator.lock().await;
+                                            (
+                                                alloc.downloaded_bytes(piece_length, total_torrent_size),
+                                                alloc.remaining_bytes(piece_length, total_torrent_size),
+                                            )
+                                        };
+                                        let resume_trackers = trackers.clone();
+                                        let resume_stats = Arc::clone(&self.stats_registry);
+                                        let resume_hash_sha1 = info_hash_sha1.clone();
+                                        let resume_peer_tx = new_peer_tx.clone();
+                                        let resume_port = self.listen_port;
+                                        tokio::spawn(async move {
+                                            Self::announce_to_trackers_stream(
+                                                &resume_trackers,
+                                                &info_hash,
+                                                session_peer_id,
+                                                resume_port,
+                                                dl,
+                                                0,
+                                                rem,
+                                                None,
+                                                Some((&resume_stats, &resume_hash_sha1)),
+                                                &resume_peer_tx,
+                                            )
+                                            .await;
+                                        });
+                                    }
+
+                                    if !is_private {
+                                        if let Some(dht) = self.dht_handle.clone() {
+                                            let dht_hash = info_hash;
+                                            let dht_port = self.listen_port;
+                                            let dht_peer_tx = new_peer_tx.clone();
+                                            let dht_stats = Arc::clone(&self.stats_registry);
+                                            let dht_hash_sha1 = info_hash_sha1.clone();
+                                            tokio::spawn(async move {
+                                                Self::announce_dht(
+                                                    dht,
+                                                    dht_hash,
+                                                    dht_port,
+                                                    dht_peer_tx,
+                                                    dht_stats,
+                                                    dht_hash_sha1,
+                                                )
+                                                .await;
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -952,7 +1068,9 @@ impl TorrentTask {
                                 .map(|s| s.uploaded_bytes)
                                 .unwrap_or(0);
 
-                            if !trackers.is_empty() && (has_download_slot || piece_allocator.lock().await.all_complete()) {
+                            let can_announce = has_download_slot || piece_allocator.lock().await.all_complete();
+
+                            if !trackers.is_empty() && can_announce {
                                 let re_trackers = trackers.clone();
                                 let re_stats = Arc::clone(&self.stats_registry);
                                 let re_hash_sha1 = info_hash_sha1.clone();
@@ -973,6 +1091,27 @@ impl TorrentTask {
                                     )
                                     .await;
                                 });
+                            }
+
+                            if !is_private && can_announce {
+                                if let Some(dht) = self.dht_handle.clone() {
+                                    let dht_hash = info_hash;
+                                    let dht_port = self.listen_port;
+                                    let dht_peer_tx = new_peer_tx.clone();
+                                    let dht_stats = Arc::clone(&self.stats_registry);
+                                    let dht_hash_sha1 = info_hash_sha1.clone();
+                                    tokio::spawn(async move {
+                                        Self::announce_dht(
+                                            dht,
+                                            dht_hash,
+                                            dht_port,
+                                            dht_peer_tx,
+                                            dht_stats,
+                                            dht_hash_sha1,
+                                        )
+                                        .await;
+                                    });
+                                }
                             }
                         }
                     }
@@ -1014,6 +1153,8 @@ impl TorrentTask {
                             &self.stats_registry,
                             have_tx.clone(),
                             new_peer_tx.clone(),
+                            self.dht_handle.clone(),
+                            is_private,
                         )
                         .await
                         {
@@ -1049,6 +1190,27 @@ impl TorrentTask {
                             .await;
                         });
                     }
+
+                    if !is_private {
+                        if let Some(dht) = self.dht_handle.clone() {
+                            let dht_hash = info_hash;
+                            let dht_port = self.listen_port;
+                            let dht_peer_tx = new_peer_tx.clone();
+                            let dht_stats = Arc::clone(&self.stats_registry);
+                            let dht_hash_sha1 = info_hash_sha1.clone();
+                            tokio::spawn(async move {
+                                Self::announce_dht(
+                                    dht,
+                                    dht_hash,
+                                    dht_port,
+                                    dht_peer_tx,
+                                    dht_stats,
+                                    dht_hash_sha1,
+                                )
+                                .await;
+                            });
+                        }
+                    }
                 }
                 // Handle inbound connections from listening port
                 Some(inbound) = inbound_rx.recv() => {
@@ -1072,6 +1234,8 @@ impl TorrentTask {
                             &self.stats_registry,
                             have_tx.clone(),
                             new_peer_tx.clone(),
+                            self.dht_handle.clone(),
+                            is_private,
                         )
                         .await;
                     }
@@ -1119,6 +1283,8 @@ impl TorrentTask {
                                 &self.stats_registry,
                                 have_tx.clone(),
                                 new_peer_tx.clone(),
+                                self.dht_handle.clone(),
+                                is_private,
                             )
                             .await
                             {
@@ -1173,6 +1339,8 @@ impl TorrentTask {
                                         &self.stats_registry,
                                         have_tx.clone(),
                                         new_peer_tx.clone(),
+                                        self.dht_handle.clone(),
+                                        is_private,
                                     )
                                     .await
                                     {
@@ -1446,11 +1614,16 @@ impl TorrentTask {
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,
         peer_tx: mpsc::Sender<Vec<Peer>>,
+        dht_handle: Option<DHTHandle>,
+        is_private: bool,
     ) -> bool {
         let key = (inbound.peer_ip, inbound.peer_port);
         let peer_addr = IpAddr::from(inbound.peer_ip);
         if banned_peers.lock().await.contains(&peer_addr) {
-            warn!("Rejecting inbound connection from banned peer: {}", peer_addr);
+            warn!(
+                "Rejecting inbound connection from banned peer: {}",
+                peer_addr
+            );
             return false;
         }
         {
@@ -1474,6 +1647,7 @@ impl TorrentTask {
         let stream = inbound.stream;
         let remote_peer_id = inbound.remote_peer_id;
         let supports_extensions = inbound.supports_extensions;
+        let supports_dht = inbound.supports_dht;
         let connected_peers_clone = Arc::clone(connected_peers);
         let banned_peers_clone = Arc::clone(banned_peers);
         let peer_failed_pieces_clone = Arc::clone(peer_failed_pieces);
@@ -1506,6 +1680,9 @@ impl TorrentTask {
                 have_tx,
                 have_rx,
                 supports_extensions,
+                supports_dht,
+                dht_handle,
+                is_private,
                 remote_ut_pex_id: None,
                 connected_peers: connected_peers_clone,
                 peer_tx,
@@ -1553,6 +1730,8 @@ impl TorrentTask {
         stats_registry: &Arc<StatsRegistry>,
         have_tx: broadcast::Sender<u32>,
         peer_tx: mpsc::Sender<Vec<Peer>>,
+        dht_handle: Option<DHTHandle>,
+        is_private: bool,
     ) -> SpawnPeerOutcome {
         let key = (peer.ipv4_addr, peer.port);
         let peer_addr = IpAddr::from(peer.ipv4_addr);
@@ -1610,6 +1789,9 @@ impl TorrentTask {
                 have_tx,
                 have_rx,
                 supports_extensions: false, // will be discovered in handshake
+                supports_dht: false,        // will be discovered in handshake
+                dht_handle,
+                is_private,
                 remote_ut_pex_id: None,
                 connected_peers: connected_peers_clone,
                 peer_tx,
@@ -1636,5 +1818,67 @@ impl TorrentTask {
 
         SpawnPeerOutcome::Spawned
     }
-}
 
+    // Query DHT for peers and announce local presence.
+    async fn announce_dht(
+        dht: DHTHandle,
+        info_hash: [u8; 20],
+        listen_port: u16,
+        peer_tx: mpsc::Sender<Vec<Peer>>,
+        stats_registry: Arc<StatsRegistry>,
+        info_hash_sha1: String,
+    ) {
+        stats_registry.update_tracker(&info_hash_sha1, "[DHT]", "Searching...", None, None, None);
+        let (raw_peer_tx, mut raw_peer_rx) = mpsc::channel::<SocketAddrV4>(128);
+        let batch_peer_tx = peer_tx.clone();
+
+        let bridge_handle = tokio::spawn(async move {
+            let mut discovered = 0usize;
+            let mut batch = Vec::new();
+            while let Some(addr) = raw_peer_rx.recv().await {
+                discovered += 1;
+                batch.push(Peer {
+                    ipv4_addr: *addr.ip(),
+                    port: addr.port(),
+                });
+                if batch.len() >= 8 {
+                    let _ = batch_peer_tx.send(std::mem::take(&mut batch)).await;
+                }
+            }
+            if !batch.is_empty() {
+                let _ = batch_peer_tx.send(batch).await;
+            }
+            discovered
+        });
+
+        let announced_nodes = dht
+            .announce_peer_streaming(info_hash, listen_port, false, raw_peer_tx)
+            .await;
+        let peer_count = bridge_handle.await.unwrap_or(0);
+
+        let next_announce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 120;
+
+        let status_msg = if announced_nodes > 0 || peer_count > 0 {
+            "Working".to_string()
+        } else {
+            "Working (0 nodes yet)".to_string()
+        };
+
+        stats_registry.update_tracker(
+            &info_hash_sha1,
+            "[DHT]",
+            &status_msg,
+            Some(peer_count),
+            Some(120),
+            Some(next_announce),
+        );
+        info!(
+            "DHT: Announced to {} nodes, discovered {} peers for {}",
+            announced_nodes, peer_count, info_hash_sha1
+        );
+    }
+}

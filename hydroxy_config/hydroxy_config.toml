@@ -4,8 +4,12 @@
 # "0.0.0.0" to listen on all interfaces.
 listen_address = "0.0.0.0"
 # assign a port number for app to listen on.
-# port for listening for incoming connections
+# TCP port for listening for incoming connections
 listen_port = 9999
+# Enable / Disable DHT
+dht_enabled = true
+# UDP port for dht
+dht_port = 9999
 
 
 # watch directory will reflected like this in download_directory...

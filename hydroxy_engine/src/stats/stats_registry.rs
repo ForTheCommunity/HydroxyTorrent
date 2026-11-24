@@ -144,13 +144,7 @@ impl StatsRegistry {
     }
 
     /// Called by `PeerWorker` when peer advertises available pieces.
-    pub fn update_peer_progress(
-        &self,
-        info_hash: &str,
-        ip: IpAddr,
-        port: u16,
-        progress: f64,
-    ) {
+    pub fn update_peer_progress(&self, info_hash: &str, ip: IpAddr, port: u16, progress: f64) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
             if let Some(peer) = torrent.peers_stats.get_mut(&(ip, port)) {
                 peer.progress = progress;
@@ -181,7 +175,7 @@ impl StatsRegistry {
     }
 
     /// Returns IPv4 (ip, port) pairs of peers that have completed a handshake for PEX advertisement.
-    pub fn active_peer_endpoints(&self, info_hash: &str) -> Vec<( std::net::Ipv4Addr, u16 )> {
+    pub fn active_peer_endpoints(&self, info_hash: &str) -> Vec<(std::net::Ipv4Addr, u16)> {
         self.torrents
             .get(info_hash)
             .map(|torrent| {
@@ -229,23 +223,30 @@ impl StatsRegistry {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
             torrent.bitfield = bitfield.to_vec();
             torrent.completed_pieces = completed_pieces;
-            torrent.downloaded_bytes = if torrent.total_pieces > 0 && completed_pieces >= torrent.total_pieces {
-                torrent.total_bytes
-            } else {
-                downloaded_bytes.min(torrent.total_bytes)
-            };
+            torrent.downloaded_bytes =
+                if torrent.total_pieces > 0 && completed_pieces >= torrent.total_pieces {
+                    torrent.total_bytes
+                } else {
+                    downloaded_bytes.min(torrent.total_bytes)
+                };
         }
     }
 
     /// Set initial progress from saved state.
-    pub fn set_initial_progress(&self, info_hash: &str, completed_pieces: usize, downloaded_bytes: u64) {
+    pub fn set_initial_progress(
+        &self,
+        info_hash: &str,
+        completed_pieces: usize,
+        downloaded_bytes: u64,
+    ) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
             torrent.completed_pieces = completed_pieces;
-            torrent.downloaded_bytes = if torrent.total_pieces > 0 && completed_pieces >= torrent.total_pieces {
-                torrent.total_bytes
-            } else {
-                downloaded_bytes.min(torrent.total_bytes)
-            };
+            torrent.downloaded_bytes =
+                if torrent.total_pieces > 0 && completed_pieces >= torrent.total_pieces {
+                    torrent.total_bytes
+                } else {
+                    downloaded_bytes.min(torrent.total_bytes)
+                };
         }
     }
 
@@ -335,8 +336,7 @@ impl StatsRegistry {
                                 }
                             }
                         }
-                        file.progress =
-                            (completed_bytes as f64 / f.size as f64).clamp(0.0, 1.0);
+                        file.progress = (completed_bytes as f64 / f.size as f64).clamp(0.0, 1.0);
                     }
                     file
                 })
@@ -385,4 +385,3 @@ impl StatsRegistry {
         }
     }
 }
-

@@ -813,6 +813,7 @@ dependencies = [
  "dashmap",
  "hydroxy_bencode",
  "hydroxy_config",
+ "hydroxy_dht",
  "hydroxy_peer_wire_proto",
  "hydroxy_state",
  "hydroxy_storage_io",

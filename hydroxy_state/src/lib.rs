@@ -35,10 +35,7 @@ impl From<TorrentState> for BencodedValue {
             b"info_hash_v1".to_vec(),
             BencodedValue::String(state.info_hash_v1.into_bytes()),
         );
-        map.insert(
-            b"version".to_vec(),
-            BencodedValue::Integer(state.version),
-        );
+        map.insert(b"version".to_vec(), BencodedValue::Integer(state.version));
         map.insert(
             b"added_time".to_vec(),
             BencodedValue::Integer(state.added_time),
@@ -223,7 +220,14 @@ impl TorrentState {
 
         tracing::debug!(
             "DECODED TRACKERS FROM HOT FILE -> {:?} | v: {} | paused : {} | sequential : {} | info hash v1 {:?} | added time {} | dl: {} | ul: {}",
-            trackers, version, paused, sequential, info_hash_v1, added_time, total_downloaded, total_uploaded
+            trackers,
+            version,
+            paused,
+            sequential,
+            info_hash_v1,
+            added_time,
+            total_downloaded,
+            total_uploaded
         );
 
         Ok(TorrentState {
@@ -260,7 +264,10 @@ mod tests {
 
         let encoded_bytes = original.encode_state();
         // Verify info_hash_v1 is at the very top and trackers is at the bottom
-        assert!(encoded_bytes.starts_with(b"d12:info_hash_v140:abcd1234abcd1234abcd1234abcd1234abcd1234"));
+        assert!(
+            encoded_bytes
+                .starts_with(b"d12:info_hash_v140:abcd1234abcd1234abcd1234abcd1234abcd1234")
+        );
         assert!(encoded_bytes.ends_with(b"8:trackersl35:http://tracker.example.com/announceee"));
 
         let decoded = TorrentState::decode_state(encoded_bytes).expect("Failed to decode state");

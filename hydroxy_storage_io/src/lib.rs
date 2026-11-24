@@ -87,7 +87,8 @@ impl TorrentDirData {
         current_depth: usize,
         max_depth: usize,
         grouped: &'a mut HashMap<String, Vec<TorrentFileEntry>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageIOError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageIOError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let mut entries = match fs::read_dir(current_dir).await {
                 Ok(e) => e,
@@ -186,7 +187,8 @@ impl TorrentDirData {
         current_depth: usize,
         max_depth: usize,
         grouped: &'a mut HashMap<String, Vec<Vec<u8>>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageIOError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageIOError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let mut entries = match fs::read_dir(current_dir).await {
                 Ok(e) => e,
@@ -234,10 +236,7 @@ impl TorrentDirData {
                     if let Ok(mut file) = File::open(&entry_path).await {
                         let mut buffer = Vec::new();
                         if file.read_to_end(&mut buffer).await.is_ok() {
-                            grouped
-                                .entry(rel_dir.to_string())
-                                .or_default()
-                                .push(buffer);
+                            grouped.entry(rel_dir.to_string()).or_default().push(buffer);
                         }
                     }
                 }
@@ -321,7 +320,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_torrent_dir_data_recursive_and_depth_clamping() {
-        let temp_dir = std::env::temp_dir().join(format!("hydroxy_test_{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "hydroxy_test_{}",
+            std::time::SystemTime::now().elapsed().unwrap().as_nanos()
+        ));
         let watch_dir = temp_dir.join("watch");
         let download_dir = temp_dir.join("download");
 
@@ -338,13 +340,29 @@ mod tests {
         //     inception.torrent
 
         fs::create_dir_all(&watch_dir).await.unwrap();
-        fs::create_dir_all(watch_dir.join("anime/bleach/season_1/deep_extra")).await.unwrap();
+        fs::create_dir_all(watch_dir.join("anime/bleach/season_1/deep_extra"))
+            .await
+            .unwrap();
         fs::create_dir_all(watch_dir.join("movies")).await.unwrap();
 
-        fs::write(watch_dir.join("root.torrent"), b"dummy root torrent").await.unwrap();
-        fs::write(watch_dir.join("anime/bleach/bleach_ep1.torrent"), b"dummy bleach").await.unwrap();
-        fs::write(watch_dir.join("anime/bleach/season_1/deep_extra/extra.torrent"), b"dummy extra").await.unwrap();
-        fs::write(watch_dir.join("movies/inception.torrent"), b"dummy movie").await.unwrap();
+        fs::write(watch_dir.join("root.torrent"), b"dummy root torrent")
+            .await
+            .unwrap();
+        fs::write(
+            watch_dir.join("anime/bleach/bleach_ep1.torrent"),
+            b"dummy bleach",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            watch_dir.join("anime/bleach/season_1/deep_extra/extra.torrent"),
+            b"dummy extra",
+        )
+        .await
+        .unwrap();
+        fs::write(watch_dir.join("movies/inception.torrent"), b"dummy movie")
+            .await
+            .unwrap();
 
         // Scan with max_depth = 2
         let results = TorrentDirData::init(
@@ -375,7 +393,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_move_file_or_dir_file_and_directory() {
-        let temp_dir = std::env::temp_dir().join(format!("hydroxy_test_move_{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "hydroxy_test_move_{}",
+            std::time::SystemTime::now().elapsed().unwrap().as_nanos()
+        ));
         let src_dir = temp_dir.join("src");
         let dst_dir = temp_dir.join("dst");
 
@@ -394,15 +415,29 @@ mod tests {
         // 2. Test directory move with nested files
         let folder_src = src_dir.join("my_torrent");
         let folder_dst = dst_dir.join("my_torrent");
-        fs::create_dir_all(folder_src.join("subfolder")).await.unwrap();
-        fs::write(folder_src.join("file1.dat"), b"data1").await.unwrap();
-        fs::write(folder_src.join("subfolder/file2.dat"), b"data2").await.unwrap();
+        fs::create_dir_all(folder_src.join("subfolder"))
+            .await
+            .unwrap();
+        fs::write(folder_src.join("file1.dat"), b"data1")
+            .await
+            .unwrap();
+        fs::write(folder_src.join("subfolder/file2.dat"), b"data2")
+            .await
+            .unwrap();
 
         move_file_or_dir(&folder_src, &folder_dst).await.unwrap();
         assert!(!folder_src.exists());
         assert!(folder_dst.exists());
-        assert_eq!(fs::read(folder_dst.join("file1.dat")).await.unwrap(), b"data1");
-        assert_eq!(fs::read(folder_dst.join("subfolder/file2.dat")).await.unwrap(), b"data2");
+        assert_eq!(
+            fs::read(folder_dst.join("file1.dat")).await.unwrap(),
+            b"data1"
+        );
+        assert_eq!(
+            fs::read(folder_dst.join("subfolder/file2.dat"))
+                .await
+                .unwrap(),
+            b"data2"
+        );
 
         let _ = fs::remove_dir_all(temp_dir).await;
     }

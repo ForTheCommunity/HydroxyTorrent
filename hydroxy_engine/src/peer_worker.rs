@@ -1,4 +1,3 @@
-
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr},
@@ -9,13 +8,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hydroxy_dht::DHTHandle;
 use hydroxy_peer_wire_proto::{handshake::Handshake, message::PeerMessage};
 use hydroxy_state::TorrentState;
 use hydroxy_storage_io::{file_region::FileRegion, piece_io::PieceIO};
 use hydroxy_tracker::Peer;
 use tokio::{
-    net::{tcp::OwnedReadHalf, TcpStream},
-    sync::{broadcast, mpsc, Mutex, RwLock},
+    net::{TcpStream, tcp::OwnedReadHalf},
+    sync::{Mutex, RwLock, broadcast, mpsc},
 };
 use tracing::{info, warn};
 
@@ -99,6 +99,9 @@ pub struct PeerWorker {
     pub have_tx: broadcast::Sender<u32>,
     pub have_rx: broadcast::Receiver<u32>,
     pub supports_extensions: bool,
+    pub supports_dht: bool,
+    pub dht_handle: Option<DHTHandle>,
+    pub is_private: bool,
     pub remote_ut_pex_id: Option<u8>,
     pub connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
     pub peer_tx: mpsc::Sender<Vec<Peer>>,
@@ -122,12 +125,10 @@ impl PeerWorker {
 
     pub async fn start(mut self) -> Result<(), EngineError> {
         let socket_addr = std::net::SocketAddr::new(self.ip_addr, self.port);
-        let mut tcp_stream = tokio::time::timeout(
-            Duration::from_secs(5),
-            TcpStream::connect(socket_addr),
-        )
-        .await
-        .map_err(|_| EngineError::Timeout)??;
+        let mut tcp_stream =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(socket_addr))
+                .await
+                .map_err(|_| EngineError::Timeout)??;
         let _ = tcp_stream.set_nodelay(true);
 
         let handshake = tokio::time::timeout(
@@ -138,6 +139,7 @@ impl PeerWorker {
         .map_err(|_| EngineError::Timeout)??;
 
         self.supports_extensions = handshake.supports_extensions();
+        self.supports_dht = handshake.supports_dht();
         self.run_with_stream(tcp_stream, handshake.peer_id).await
     }
 
@@ -176,10 +178,13 @@ impl PeerWorker {
             self.peer_state.am_interested = true;
         }
         let supports_extensions = self.supports_extensions;
+        let supports_dht = self.supports_dht;
+        let is_private = self.is_private;
+        let dht_handle = self.dht_handle.clone();
 
         tokio::time::timeout(Duration::from_secs(10), async {
-            // If remote peer supports BEP 10 Extension Protocol, send Extended Handshake
-            if supports_extensions {
+            // If remote peer supports BEP 10 Extension Protocol and torrent is not private, send Extended Handshake
+            if supports_extensions && !is_private {
                 let ext_handshake_payload = pex::build_extended_handshake();
                 PeerMessage::Extended {
                     id: pex::EXTENSION_HANDSHAKE_ID,
@@ -187,6 +192,15 @@ impl PeerWorker {
                 }
                 .write(&mut tcp_stream)
                 .await?;
+            }
+
+            // If remote peer supports BEP 5 DHT and torrent is not private, send Port message
+            if supports_dht && !is_private {
+                if let Some(ref dht) = dht_handle {
+                    if let Ok(std::net::SocketAddr::V4(v4)) = dht.local_addr() {
+                        PeerMessage::Port(v4.port()).write(&mut tcp_stream).await?;
+                    }
+                }
             }
 
             // Send local bitfield immediately after handshake per BEP 0003
@@ -211,12 +225,8 @@ impl PeerWorker {
 
         let client_name = parse_peer_id(&remote_peer_id);
 
-        self.stats_registry.peer_connected(
-            &info_hash_sha1,
-            self.ip_addr,
-            self.port,
-            client_name,
-        );
+        self.stats_registry
+            .peer_connected(&info_hash_sha1, self.ip_addr, self.port, client_name);
 
         // Split TCP stream into dedicated read and write halves.
         // This ensures PeerMessage::read is NEVER cancelled or interrupted mid-message by
@@ -277,7 +287,9 @@ impl PeerWorker {
             active_piece: Arc::clone(&self.active_piece_guard),
         };
 
-        let result = self.run_loop(&mut read_half, &out_tx, &info_hash_sha1).await;
+        let result = self
+            .run_loop(&mut read_half, &out_tx, &info_hash_sha1)
+            .await;
 
         // Cleanly release any in-progress piece back to the pool on normal return
         if let Some(piece_idx) = self.current_piece {
@@ -373,12 +385,10 @@ impl PeerWorker {
             match tokio::time::timeout(wait_timeout, read_half.peek(&mut peek_buf)).await {
                 Ok(peek_res) => {
                     peek_res?;
-                    let peer_message = tokio::time::timeout(
-                        Duration::from_secs(30),
-                        PeerMessage::read(read_half),
-                    )
-                    .await
-                    .map_err(|_| EngineError::Timeout)??;
+                    let peer_message =
+                        tokio::time::timeout(Duration::from_secs(30), PeerMessage::read(read_half))
+                            .await
+                            .map_err(|_| EngineError::Timeout)??;
                     self.handle_message(peer_message, out_tx, info_hash_sha1)
                         .await?;
                 }
@@ -391,7 +401,8 @@ impl PeerWorker {
             if last_pex_sent.elapsed() >= pex_period {
                 last_pex_sent = Instant::now();
                 if let Some(remote_id) = self.remote_ut_pex_id {
-                    self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
+                    self.send_pex_update(remote_id, out_tx, info_hash_sha1)
+                        .await;
                 }
             }
         }
@@ -465,7 +476,9 @@ impl PeerWorker {
                 let bit = 7 - (index as usize % 8);
                 if byte >= self.peer_state.bitfield.len() {
                     let max_bytes = (self.total_pieces + 7) / 8;
-                    self.peer_state.bitfield.resize((byte + 1).min(max_bytes), 0);
+                    self.peer_state
+                        .bitfield
+                        .resize((byte + 1).min(max_bytes), 0);
                 }
                 if byte < self.peer_state.bitfield.len() {
                     self.peer_state.bitfield[byte] |= 1 << bit;
@@ -662,18 +675,18 @@ impl PeerWorker {
                     // write to disk without cloning FileRegion vector
                     {
                         let map = self.file_map.read().await;
-                        PieceIO::write_piece_to_disk(
-                            &*map,
-                            index,
-                            self.piece_length,
-                            &assembled,
-                        )
-                        .await?;
+                        PieceIO::write_piece_to_disk(&*map, index, self.piece_length, &assembled)
+                            .await?;
                     }
                     drop(assembled);
 
                     info!("Piece {} written to disk", index);
-                    self.stats_registry.piece_completed(&info_hash_sha1, self.ip_addr, self.port, index as usize);
+                    self.stats_registry.piece_completed(
+                        &info_hash_sha1,
+                        self.ip_addr,
+                        self.port,
+                        index as usize,
+                    );
 
                     // update hot_state serialized under lock to prevent concurrent state task pileups
                     {
@@ -745,8 +758,7 @@ impl PeerWorker {
                         )
                         .await
                     };
-                    if let Ok(Some(block)) = block_opt
-                    {
+                    if let Ok(Some(block)) = block_opt {
                         let block_len = block.len() as u64;
                         if out_tx
                             .send(PeerMessage::Piece {
@@ -776,7 +788,24 @@ impl PeerWorker {
                 let _ = (index, begin, length);
             }
 
+            PeerMessage::Port(port) => {
+                if !self.is_private && port != 0 {
+                    if let Some(ref dht) = self.dht_handle {
+                        if let IpAddr::V4(ipv4) = self.ip_addr {
+                            let target = std::net::SocketAddrV4::new(ipv4, port);
+                            let dht_clone = dht.clone();
+                            tokio::spawn(async move {
+                                let _ = dht_clone.ping(target).await;
+                            });
+                        }
+                    }
+                }
+            }
+
             PeerMessage::Extended { id, payload } => {
+                if self.is_private {
+                    return Ok(());
+                }
                 if id == pex::EXTENSION_HANDSHAKE_ID {
                     if let Some(client_ver) = pex::parse_remote_client_version(&payload) {
                         self.stats_registry.update_peer_client(
@@ -795,7 +824,8 @@ impl PeerWorker {
                         self.remote_ut_pex_id = Some(remote_id);
                         if was_none {
                             // Send initial PEX message with currently connected peers
-                            self.send_pex_update(remote_id, out_tx, info_hash_sha1).await;
+                            self.send_pex_update(remote_id, out_tx, info_hash_sha1)
+                                .await;
                         }
                     }
                 } else if Some(id) == self.remote_ut_pex_id || id == pex::UT_PEX_EXT_ID {
@@ -823,6 +853,9 @@ impl PeerWorker {
         out_tx: &mpsc::Sender<PeerMessage>,
         info_hash_sha1: &str,
     ) {
+        if self.is_private {
+            return;
+        }
         let current_peers: Vec<(Ipv4Addr, u16)> =
             self.stats_registry.active_peer_endpoints(info_hash_sha1);
 
@@ -923,11 +956,15 @@ impl PeerWorker {
         while self.pending_requests < max_pending && self.requested_offset < actual_len {
             let this_block_len = block_size.min(actual_len - self.requested_offset);
 
-            if out_tx.send(PeerMessage::Request {
-                index: piece_idx,
-                begin: self.requested_offset,
-                length: this_block_len,
-            }).await.is_err() {
+            if out_tx
+                .send(PeerMessage::Request {
+                    index: piece_idx,
+                    begin: self.requested_offset,
+                    length: this_block_len,
+                })
+                .await
+                .is_err()
+            {
                 break;
             }
 
@@ -959,14 +996,41 @@ mod tests {
 
     #[test]
     fn test_calculate_piece_backoff_exponential() {
-        assert_eq!(PeerWorker::calculate_piece_backoff(0), Duration::from_secs(5));
-        assert_eq!(PeerWorker::calculate_piece_backoff(1), Duration::from_secs(5));
-        assert_eq!(PeerWorker::calculate_piece_backoff(2), Duration::from_secs(10));
-        assert_eq!(PeerWorker::calculate_piece_backoff(3), Duration::from_secs(20));
-        assert_eq!(PeerWorker::calculate_piece_backoff(4), Duration::from_secs(40));
-        assert_eq!(PeerWorker::calculate_piece_backoff(5), Duration::from_secs(80));
-        assert_eq!(PeerWorker::calculate_piece_backoff(6), Duration::from_secs(160));
-        assert_eq!(PeerWorker::calculate_piece_backoff(7), Duration::from_secs(300)); // capped
-        assert_eq!(PeerWorker::calculate_piece_backoff(10), Duration::from_secs(300)); // capped
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(0),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(1),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(2),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(3),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(4),
+            Duration::from_secs(40)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(5),
+            Duration::from_secs(80)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(6),
+            Duration::from_secs(160)
+        );
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(7),
+            Duration::from_secs(300)
+        ); // capped
+        assert_eq!(
+            PeerWorker::calculate_piece_backoff(10),
+            Duration::from_secs(300)
+        ); // capped
     }
 }

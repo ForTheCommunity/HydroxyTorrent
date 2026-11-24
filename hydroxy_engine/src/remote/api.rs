@@ -670,11 +670,12 @@ pub async fn remove_torrent(
             .unwrap_or("");
         let name = torrent_snap.as_ref().map(|s| s.name.as_str()).unwrap_or("");
 
-        let matching_storages: Vec<&hydroxy_config::StorageConfig> = if let Some(st) = config.get_storage(storage_name) {
-            vec![st]
-        } else {
-            config.storage_config.iter().collect()
-        };
+        let matching_storages: Vec<&hydroxy_config::StorageConfig> =
+            if let Some(st) = config.get_storage(storage_name) {
+                vec![st]
+            } else {
+                config.storage_config.iter().collect()
+            };
 
         for storage in matching_storages {
             let watch_dir = std::path::PathBuf::from(&storage.watch_directory);
@@ -842,7 +843,9 @@ pub async fn shutdown_daemon(State(state): State<Arc<ServerState>>) -> impl Into
     tracing::info!(target: "major", "Daemon shutdown requested via RPC API...");
     let controls = Arc::clone(&state.torrent_controls);
     tokio::spawn(async move {
-        let pending = controls.shutdown_and_wait(tokio::time::Duration::from_secs(10)).await;
+        let pending = controls
+            .shutdown_and_wait(tokio::time::Duration::from_secs(10))
+            .await;
         if pending == 0 {
             tracing::info!(target: "major", "All torrent tasks safely saved and closed via RPC shutdown.");
         } else {
@@ -1228,6 +1231,11 @@ mod tests {
         let expected_sessions_file = expected_data_dir.join("active_sessions.json");
         let path = ServerState::sessions_file_path().unwrap();
         assert_eq!(path, expected_sessions_file);
-        assert_ne!(path, HydroxyConfig::state_dir().unwrap().join("active_sessions.json"));
+        assert_ne!(
+            path,
+            HydroxyConfig::state_dir()
+                .unwrap()
+                .join("active_sessions.json")
+        );
     }
 }

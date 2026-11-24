@@ -30,6 +30,8 @@ pub enum PeerMessage {
         id: u8,
         payload: Vec<u8>,
     },
+    // BEP 0005: DHT port message (ID = 9, length = 3)
+    Port(u16),
 }
 
 impl PeerMessage {
@@ -217,6 +219,24 @@ impl PeerMessage {
                 })
             }
 
+            9 => {
+                // BEP 0005: DHT port message (len=3, id=9, 2-byte port)
+                let mut port_bytes = [0u8; 2];
+                tcp_stream
+                    .read_exact(&mut port_bytes)
+                    .await
+                    .map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
+                // If there were extra trailing bytes, consume them
+                if payload_length > 2 {
+                    let mut extra = vec![0u8; (payload_length - 2) as usize];
+                    tcp_stream
+                        .read_exact(&mut extra)
+                        .await
+                        .map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
+                }
+                Ok(PeerMessage::Port(u16::from_be_bytes(port_bytes)))
+            }
+
             _ => {
                 // Unknown or unhandled extension/DHT message (e.g., id=9 Port, BEP 6 Fast Extension).
                 // Consume and discard exact payload bytes so the TCP stream stays synchronized
@@ -306,6 +326,13 @@ impl PeerMessage {
                 tcp_stream.write_all(&header).await?;
                 tcp_stream.write_all(payload).await
             }
+            PeerMessage::Port(port) => {
+                let mut buf = [0u8; 7];
+                buf[0..4].copy_from_slice(&3u32.to_be_bytes());
+                buf[4] = 9;
+                buf[5..7].copy_from_slice(&port.to_be_bytes());
+                tcp_stream.write_all(&buf).await
+            }
         };
         io_res.map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
 
@@ -369,6 +396,7 @@ mod tests {
                 id: 1,
                 payload: b"d1:md6:ut_pexi1eee".to_vec(),
             },
+            PeerMessage::Port(6881),
         ];
 
         for msg in messages {

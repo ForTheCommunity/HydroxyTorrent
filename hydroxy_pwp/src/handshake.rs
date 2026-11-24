@@ -20,6 +20,8 @@ impl Handshake {
         let mut reserved = [0u8; 8];
         // BEP 10: Extension Protocol bit (20th bit from right of 64-bit reserved field, i.e., byte 5, bit 0x10)
         reserved[5] |= 0x10;
+        // BEP 05: DHT Protocol bit (last bit of the 8-byte reserved field, i.e., byte 7, bit 0x01)
+        reserved[7] |= 0x01;
         Self {
             reserved,
             info_hash,
@@ -29,6 +31,10 @@ impl Handshake {
 
     pub fn supports_extensions(&self) -> bool {
         (self.reserved[5] & 0x10) != 0
+    }
+
+    pub fn supports_dht(&self) -> bool {
+        (self.reserved[7] & 0x01) != 0
     }
 
     pub fn to_bytes(&self) -> [u8; 68] {

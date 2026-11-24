@@ -1,11 +1,8 @@
-use std::{
-    collections::BTreeMap,
-    net::Ipv4Addr,
-};
+use std::{collections::BTreeMap, net::Ipv4Addr};
 
 use hydroxy_bencode::{
     b_dict::BDict,
-    decode::{decode, BencodedValue},
+    decode::{BencodedValue, decode},
     encode::encode,
 };
 use hydroxy_tracker::Peer;
@@ -23,11 +20,17 @@ pub const UT_PEX_NAME: &[u8] = b"ut_pex";
 /// Advertises our supported extensions (specifically `ut_pex -> 1`) and client version.
 pub fn build_extended_handshake() -> Vec<u8> {
     let mut m_dict = BTreeMap::new();
-    m_dict.insert(UT_PEX_NAME.to_vec(), BencodedValue::Integer(UT_PEX_EXT_ID as i64));
+    m_dict.insert(
+        UT_PEX_NAME.to_vec(),
+        BencodedValue::Integer(UT_PEX_EXT_ID as i64),
+    );
 
     let mut root = BTreeMap::new();
     root.insert(b"m".to_vec(), BencodedValue::Dictionary(m_dict));
-    root.insert(b"v".to_vec(), BencodedValue::String(b"HydroxyTorrent 1.0".to_vec()));
+    root.insert(
+        b"v".to_vec(),
+        BencodedValue::String(b"HydroxyTorrent 1.0".to_vec()),
+    );
 
     encode(&BencodedValue::Dictionary(root))
 }

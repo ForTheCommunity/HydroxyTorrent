@@ -1,6 +1,10 @@
 use std::{net::IpAddr, sync::Arc};
 
-use axum::{Json, Router, response::IntoResponse, routing::{get, post}};
+use axum::{
+    Json, Router,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use hydroxy_config::{HydroxyConfig, RemoteConfig};
 use serde_json::json;
 use tokio::{fs, net::TcpListener};
@@ -13,10 +17,10 @@ use tracing::info;
 use crate::{
     control::TorrentControlRegistry,
     remote::api::{
-        auth_middleware, auth_status_handler, get_logs, get_minor_logs, get_storages,
+        ServerState, auth_middleware, auth_status_handler, get_logs, get_minor_logs, get_storages,
         get_system_stats, get_torrent_detail, get_torrents, login_handler, logout_handler,
         pause_torrent, reannounce_torrent, recheck_torrent, remove_torrent, resume_torrent,
-        set_sequential_download, shutdown_daemon, unsubscribe_minor_logs, ServerState,
+        set_sequential_download, shutdown_daemon, unsubscribe_minor_logs,
     },
     stats::stats_registry::StatsRegistry,
 };
@@ -46,13 +50,22 @@ pub async fn start_server(
         .route("/auth/status", get(auth_status_handler))
         .route("/torrents", get(get_torrents))
         .route("/storages", get(get_storages))
-        .route("/torrent/:info_hash", get(get_torrent_detail).delete(remove_torrent))
+        .route(
+            "/torrent/:info_hash",
+            get(get_torrent_detail).delete(remove_torrent),
+        )
         .route("/torrent/:info_hash/pause", post(pause_torrent))
         .route("/torrent/:info_hash/resume", post(resume_torrent))
         .route("/torrent/:info_hash/recheck", post(recheck_torrent))
         .route("/torrent/:info_hash/reannounce", post(reannounce_torrent))
-        .route("/torrent/:info_hash/sequential", post(set_sequential_download))
-        .route("/torrent/:info_hash/remove", post(remove_torrent).delete(remove_torrent))
+        .route(
+            "/torrent/:info_hash/sequential",
+            post(set_sequential_download),
+        )
+        .route(
+            "/torrent/:info_hash/remove",
+            post(remove_torrent).delete(remove_torrent),
+        )
         .route("/logs", get(get_logs))
         .route(
             "/logs/minor",
@@ -66,9 +79,7 @@ pub async fn start_server(
             auth_middleware,
         ));
 
-    let api_routes = Router::new()
-        .merge(public_api)
-        .merge(protected_api);
+    let api_routes = Router::new().merge(public_api).merge(protected_api);
 
     // tmp
     let cors = CorsLayer::very_permissive();

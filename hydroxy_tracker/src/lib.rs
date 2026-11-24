@@ -220,14 +220,12 @@ pub(crate) async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAdd
                     DNS_NEGATIVE_TTL
                 };
                 if ts.elapsed() < ttl {
-                    return cached
-                        .map(|ip| SocketAddr::new(ip, port))
-                        .ok_or_else(|| {
-                            TrackerError::NetworkError(format!(
-                                "DNS lookup failed (cached) for {}:{}",
-                                host, port
-                            ))
-                        });
+                    return cached.map(|ip| SocketAddr::new(ip, port)).ok_or_else(|| {
+                        TrackerError::NetworkError(format!(
+                            "DNS lookup failed (cached) for {}:{}",
+                            host, port
+                        ))
+                    });
                 } else {
                     cache.remove(&key);
                 }
@@ -279,14 +277,9 @@ pub(crate) async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAdd
             cache.insert(key.clone(), (Instant::now(), resolved));
         }
 
-        return resolved
-            .map(|ip| SocketAddr::new(ip, port))
-            .ok_or_else(|| {
-                TrackerError::NetworkError(format!(
-                    "Failed to resolve tracker host {}:{}",
-                    host, port
-                ))
-            });
+        return resolved.map(|ip| SocketAddr::new(ip, port)).ok_or_else(|| {
+            TrackerError::NetworkError(format!("Failed to resolve tracker host {}:{}", host, port))
+        });
     }
 }
 
@@ -348,7 +341,8 @@ impl Tracker {
             return http_s::announce(self).await;
         } else if self.announce_url.starts_with("udp://") {
             return udp::announce(self).await;
-        } else if self.announce_url.starts_with("ws://") || self.announce_url.starts_with("wss://") {
+        } else if self.announce_url.starts_with("ws://") || self.announce_url.starts_with("wss://")
+        {
             return ws::announce(self).await;
         }
 

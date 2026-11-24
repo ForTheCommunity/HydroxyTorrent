@@ -1,6 +1,6 @@
-use std::path::Path;
 use hydroxy_storage_io::{file_region::FileRegion, piece_io::PieceIO};
 use sha1::{Digest, Sha1};
+use std::path::Path;
 use tracing::info;
 
 pub struct RecheckResult {

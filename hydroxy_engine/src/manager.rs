@@ -25,6 +25,7 @@ impl Manager {
         inbound_registry: Arc<InboundTorrentRegistry>,
         queue_manager: Arc<DownloadQueueManager>,
         listen_port: u16,
+        dht_handle: Option<hydroxy_dht::DHTHandle>,
     ) -> Result<()> {
         info!(target: "major", "Hydroxy Engine Started...");
 
@@ -64,7 +65,9 @@ impl Manager {
                     config.effective_max_active_downloads(),
                     config.session_config.dont_count_slow_torrents,
                     config.session_config.slow_dl_rate_threshold_bytes(),
-                    std::time::Duration::from_secs(config.session_config.slow_torrent_inactive_timer_secs),
+                    std::time::Duration::from_secs(
+                        config.session_config.slow_torrent_inactive_timer_secs,
+                    ),
                 )
                 .await;
 
@@ -97,7 +100,10 @@ impl Manager {
                     match TorrentDirData::scan_paths(&watch_dir, &download_dir, max_depth).await {
                         Ok(data) => data,
                         Err(e) => {
-                            warn!("Failed to scan watch directory '{}' [storage: {}]: {}", watch_dir, storage.name, e);
+                            warn!(
+                                "Failed to scan watch directory '{}' [storage: {}]: {}",
+                                watch_dir, storage.name, e
+                            );
                             continue;
                         }
                     };
@@ -128,11 +134,12 @@ impl Manager {
                             }
                         };
 
-                        let final_dir = if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
-                            download_dir.clone()
-                        } else {
-                            format!("{}/{}", &download_dir, &torrent_dir.dir_name)
-                        };
+                        let final_dir =
+                            if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
+                                download_dir.clone()
+                            } else {
+                                format!("{}/{}", &download_dir, &torrent_dir.dir_name)
+                            };
 
                         let temp_dir = temp_base_dir.as_ref().map(|base| {
                             if torrent_dir.dir_name.is_empty() || torrent_dir.dir_name == "." {
@@ -145,7 +152,10 @@ impl Manager {
                         let torrent_info = match TorrentInfo::parse_torrent_file(raw_bytes) {
                             Ok(info) => info,
                             Err(e) => {
-                                warn!("Failed to parse torrent file in {}: {}", torrent_dir.dir_name, e);
+                                warn!(
+                                    "Failed to parse torrent file in {}: {}",
+                                    torrent_dir.dir_name, e
+                                );
                                 continue;
                             }
                         };
@@ -160,7 +170,8 @@ impl Manager {
                         active.insert(info_hash);
                         drop(active);
 
-                        let info_hash_sha1 = hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash);
+                        let info_hash_sha1 =
+                            hydroxy_utils::torrent_info::OtherInfos::to_sha1(&info_hash);
                         info!(
                             target: "major",
                             "Torrent found in watch dir: '{}' ({}) [storage: '{}', category: '{}']",
@@ -183,6 +194,7 @@ impl Manager {
                             listen_port,
                             inbound_registry: inbound_registry.clone(),
                             queue_manager: queue_manager.clone(),
+                            dht_handle: dht_handle.clone(),
                         };
 
                         let active_torrents_ref = active_torrents.clone();

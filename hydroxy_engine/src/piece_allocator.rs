@@ -63,11 +63,10 @@ impl PieceAllocator {
                 if exclude_pieces.contains(&i) {
                     continue;
                 }
-                if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
+                if matches!(self.pieces[i], PieceStatus::Missing)
+                    && Self::check_piece(peer_bitfield, i)
                 {
-                    self.pieces[i] = PieceStatus::Downloading {
-                        peer_ip: *peer_ip,
-                    };
+                    self.pieces[i] = PieceStatus::Downloading { peer_ip: *peer_ip };
                     return Some(i);
                 }
             }
@@ -90,9 +89,7 @@ impl PieceAllocator {
         }
 
         if let Some((idx, _)) = best {
-            self.pieces[idx] = PieceStatus::Downloading {
-                peer_ip: *peer_ip,
-            };
+            self.pieces[idx] = PieceStatus::Downloading { peer_ip: *peer_ip };
             Some(idx)
         } else {
             None

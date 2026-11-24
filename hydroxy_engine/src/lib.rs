@@ -48,12 +48,8 @@ impl HydroxyEngine {
         let listen_port = config.network_config.listen_port;
 
         let inbound_registry = Arc::new(InboundTorrentRegistry::new());
-        if let Err(e) = PeerListener::start(
-            listen_address,
-            listen_port,
-            Arc::clone(&inbound_registry),
-        )
-        .await
+        if let Err(e) =
+            PeerListener::start(listen_address, listen_port, Arc::clone(&inbound_registry)).await
         {
             warn!(
                 target: "major",
@@ -69,12 +65,90 @@ impl HydroxyEngine {
             std::time::Duration::from_secs(config.session_config.slow_torrent_inactive_timer_secs),
         ));
 
+        let dht_handle = if config.network_config.dht_enabled {
+            let bind_ip = match listen_address {
+                std::net::IpAddr::V4(v4) => v4,
+                std::net::IpAddr::V6(_) => std::net::Ipv4Addr::UNSPECIFIED,
+            };
+            let dht_port = if config.network_config.dht_port != 0 {
+                config.network_config.dht_port
+            } else {
+                listen_port
+            };
+
+            let bootstrap_routers = if config.network_config.dht_bootstrap_routers.is_empty() {
+                hydroxy_dht::DEFAULT_BOOTSTRAP_ROUTERS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                config.network_config.dht_bootstrap_routers.clone()
+            };
+
+            let dht_cfg = hydroxy_dht::DHTConfig {
+                bind_addr: std::net::SocketAddrV4::new(bind_ip, dht_port),
+                bootstrap_routers: bootstrap_routers.clone(),
+                ..Default::default()
+            };
+
+            match hydroxy_dht::DHTNode::start(dht_cfg).await {
+                Ok((node, handle)) => {
+                    let shutdown_notify = control_registry.shutdown_notify();
+                    tokio::spawn(async move {
+                        shutdown_notify.notified().await;
+                        node.shutdown();
+                    });
+                    info!(
+                        target: "major",
+                        "DHT node started on UDP port {}",
+                        handle.local_addr().map(|a| a.port()).unwrap_or(dht_port)
+                    );
+                    Some(handle)
+                }
+                Err(e) => {
+                    warn!(
+                        target: "major",
+                        "Failed to bind DHT on port {}, trying ephemeral port: {}",
+                        dht_port, e
+                    );
+                    let fallback_cfg = hydroxy_dht::DHTConfig {
+                        bind_addr: std::net::SocketAddrV4::new(bind_ip, 0),
+                        bootstrap_routers,
+                        ..Default::default()
+                    };
+                    match hydroxy_dht::DHTNode::start(fallback_cfg).await {
+                        Ok((node, handle)) => {
+                            let shutdown_notify = control_registry.shutdown_notify();
+                            tokio::spawn(async move {
+                                shutdown_notify.notified().await;
+                                node.shutdown();
+                            });
+                            info!(
+                                target: "major",
+                                "DHT node started on ephemeral UDP port {}",
+                                handle.local_addr().map(|a| a.port()).unwrap_or(0)
+                            );
+                            Some(handle)
+                        }
+                        Err(err) => {
+                            warn!(target: "major", "Failed to start DHT node: {}", err);
+                            None
+                        }
+                    }
+                }
+            }
+        } else {
+            info!(target: "major", "DHT trackerless peer discovery disabled by configuration");
+            None
+        };
+
         Manager::start(
             stats_registry,
             control_registry,
             inbound_registry,
             queue_manager,
             listen_port,
+            dht_handle,
         )
         .await?;
 

@@ -1,11 +1,11 @@
+use hydroxy_peer_wire_proto::handshake::Handshake;
 use std::{collections::HashMap, net::Ipv4Addr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, Mutex, Semaphore},
+    sync::{Mutex, Semaphore, mpsc},
 };
 use tracing::{info, warn};
-use hydroxy_peer_wire_proto::handshake::Handshake;
 
 const MAX_CONCURRENT_INBOUND_HANDSHAKES: usize = 64;
 
@@ -15,6 +15,7 @@ pub struct InboundConnection {
     pub peer_port: u16,
     pub remote_peer_id: [u8; 20],
     pub supports_extensions: bool,
+    pub supports_dht: bool,
 }
 
 pub struct InboundTorrentRegistration {
@@ -102,15 +103,13 @@ impl PeerListener {
                         tokio::spawn(async move {
                             let _permit = permit;
                             // Read 68-byte handshake with 10s timeout
-                            let handshake_res = tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                async {
+                            let handshake_res =
+                                tokio::time::timeout(std::time::Duration::from_secs(10), async {
                                     let mut buf = [0u8; 68];
                                     stream.read_exact(&mut buf).await?;
                                     Handshake::from_bytes(&buf)
-                                },
-                            )
-                            .await;
+                                })
+                                .await;
 
                             let incoming = match handshake_res {
                                 Ok(Ok(h)) => h,
@@ -134,6 +133,7 @@ impl PeerListener {
                                         peer_port,
                                         remote_peer_id: incoming.peer_id,
                                         supports_extensions: incoming.supports_extensions(),
+                                        supports_dht: incoming.supports_dht(),
                                     }),
                                 )
                                 .await;

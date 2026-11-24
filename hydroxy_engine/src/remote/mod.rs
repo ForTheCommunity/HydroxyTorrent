@@ -5,7 +5,6 @@ use crate::stats::stats::{PeerStatsSnapshot, TorrentFileStats, TrackerStats};
 pub mod api;
 pub mod server;
 
-
 #[derive(Serialize)]
 pub struct TorrentApiItem {
     pub info_hash: String,

@@ -8,9 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::{
     api::{ApiClient, SavedSession},
     config::TuiConfig,
-    models::{
-        LogLevel, ParsedLogLine, StorageTargetItem, SystemStats, TorrentDetail, TorrentItem,
-    },
+    models::{LogLevel, ParsedLogLine, StorageTargetItem, SystemStats, TorrentDetail, TorrentItem},
     theme::ThemeKind,
 };
 
@@ -218,7 +216,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cli_url: Option<String>, cli_user: Option<String>, cli_pass: Option<String>) -> Self {
+    pub fn new(
+        cli_url: Option<String>,
+        cli_user: Option<String>,
+        cli_pass: Option<String>,
+    ) -> Self {
         let tui_cfg = TuiConfig::load();
 
         let default_url = tui_cfg
@@ -247,7 +249,11 @@ impl App {
             .and_then(ThemeKind::from_str)
             .unwrap_or(ThemeKind::Dark);
 
-        let api = ApiClient::new(base_url.clone(), saved_token.clone(), Some(username.clone()));
+        let api = ApiClient::new(
+            base_url.clone(),
+            saved_token.clone(),
+            Some(username.clone()),
+        );
 
         Self {
             api,
@@ -422,7 +428,11 @@ impl App {
         // Collect unique storage targets
         let mut target_names: Vec<String> = self.storages.iter().map(|s| s.name.clone()).collect();
         for t in &self.all_torrents {
-            let sname = if t.storage.is_empty() { "default" } else { t.storage.as_str() };
+            let sname = if t.storage.is_empty() {
+                "default"
+            } else {
+                t.storage.as_str()
+            };
             if !target_names.iter().any(|n| n == sname) {
                 target_names.push(sname.to_string());
             }
@@ -436,7 +446,11 @@ impl App {
                 .all_torrents
                 .iter()
                 .filter(|t| {
-                    let st = if t.storage.is_empty() { "default" } else { t.storage.as_str() };
+                    let st = if t.storage.is_empty() {
+                        "default"
+                    } else {
+                        t.storage.as_str()
+                    };
                     st == sname
                 })
                 .collect();
@@ -532,13 +546,18 @@ impl App {
                             }
                         }
                     } else if let Some(storage_filter) = f.strip_prefix("storage:") {
-                        let (target_storage, cat_filter) = if let Some((st, cat)) = storage_filter.split_once("/category:") {
-                            (st, Some(cat))
-                        } else {
-                            (storage_filter, None)
-                        };
+                        let (target_storage, cat_filter) =
+                            if let Some((st, cat)) = storage_filter.split_once("/category:") {
+                                (st, Some(cat))
+                            } else {
+                                (storage_filter, None)
+                            };
 
-                        let t_storage = if t.storage.is_empty() { "default" } else { t.storage.as_str() };
+                        let t_storage = if t.storage.is_empty() {
+                            "default"
+                        } else {
+                            t.storage.as_str()
+                        };
                         if t_storage != target_storage {
                             return false;
                         }
@@ -580,7 +599,10 @@ impl App {
 
         list.sort_by(|a, b| {
             let ord = match self.sort_col {
-                SortColumn::Name => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
+                SortColumn::Name => a
+                    .name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase()),
                 SortColumn::Size => a.size.cmp(&b.size),
                 SortColumn::Progress => a
                     .progress
@@ -604,11 +626,7 @@ impl App {
                     .partial_cmp(&b.ratio())
                     .unwrap_or(std::cmp::Ordering::Equal),
             };
-            if self.sort_asc {
-                ord
-            } else {
-                ord.reverse()
-            }
+            if self.sort_asc { ord } else { ord.reverse() }
         });
 
         list
@@ -782,7 +800,11 @@ impl App {
             ModalState::Help => {
                 if matches!(
                     key.code,
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('h')
+                    KeyCode::Esc
+                        | KeyCode::Enter
+                        | KeyCode::Char('q')
+                        | KeyCode::Char('?')
+                        | KeyCode::Char('h')
                 ) {
                     self.modal = ModalState::None;
                 }
@@ -918,7 +940,11 @@ impl App {
                 self.set_toast(format!(
                     "Sort {}: {}",
                     self.sort_col.label(),
-                    if self.sort_asc { "Ascending ▲" } else { "Descending ▼" }
+                    if self.sort_asc {
+                        "Ascending ▲"
+                    } else {
+                        "Descending ▼"
+                    }
                 ));
             }
             KeyCode::Char('p') => {
@@ -956,7 +982,11 @@ impl App {
                             ok += 1;
                         }
                     }
-                    self.set_toast(format!("Recheck started for {}/{} torrent(s)", ok, targets.len()));
+                    self.set_toast(format!(
+                        "Recheck started for {}/{} torrent(s)",
+                        ok,
+                        targets.len()
+                    ));
                     self.refresh_all().await;
                 }
             }
@@ -992,7 +1022,12 @@ impl App {
             KeyCode::Char('o') => {
                 if let Some(t) = self.selected_torrent() {
                     let next_seq = !t.sequential;
-                    if self.api.set_sequential(&t.info_hash, next_seq).await.is_ok() {
+                    if self
+                        .api
+                        .set_sequential(&t.info_hash, next_seq)
+                        .await
+                        .is_ok()
+                    {
                         self.set_toast(format!(
                             "Sequential download {} for {}",
                             if next_seq { "enabled" } else { "disabled" },

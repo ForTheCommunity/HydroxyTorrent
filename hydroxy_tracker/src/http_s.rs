@@ -37,7 +37,6 @@ fn shared_http_client() -> &'static reqwest::Client {
 }
 
 pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError> {
-
     let mut url = format!(
         "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
         tracker.announce_url,

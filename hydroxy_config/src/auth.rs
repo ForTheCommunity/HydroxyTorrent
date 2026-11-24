@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
 use std::num::NonZeroU32;
 use thiserror::Error;
@@ -44,7 +44,10 @@ pub fn hash_password(plain_password: &str) -> String {
     let salt_b64 = BASE64.encode(salt);
     let key_b64 = BASE64.encode(out_key);
 
-    format!("{}i={}${}${}", HASH_PREFIX, DEFAULT_ITERATIONS, salt_b64, key_b64)
+    format!(
+        "{}i={}${}${}",
+        HASH_PREFIX, DEFAULT_ITERATIONS, salt_b64, key_b64
+    )
 }
 
 /// Generates a cryptographically secure 64-character hex session token.

@@ -36,7 +36,9 @@ fn parse_cli_args() -> (Option<String>, Option<String>, Option<String>) {
                 println!("Usage: hydroxy_rc_tui [OPTIONS]");
                 println!();
                 println!("Options:");
-                println!("  -u, --url <URL>        Daemon RPC URL (default: from config.toml or http://127.0.0.1:10000)");
+                println!(
+                    "  -u, --url <URL>        Daemon RPC URL (default: from config.toml or http://127.0.0.1:10000)"
+                );
                 println!("  -U, --user <USERNAME>  RPC Username");
                 println!("  -p, --pass <PASSWORD>  RPC Password");
                 println!("  -h, --help             Print help");

@@ -582,10 +582,15 @@ impl DHTHandle {
         token_map.into_values().collect()
     }
 
-    /// Announce peer presence for `info_hash` to the closest DHT nodes.
-    pub async fn announce_peer(&self, info_hash: NodeId, port: u16, implied_port: bool) -> usize {
-        let (dummy_tx, _) = mpsc::channel(1);
-        let nodes_with_tokens = self.get_peers(info_hash, dummy_tx).await;
+    /// Announce peer presence for `info_hash` to the closest DHT nodes while streaming discovered peers.
+    pub async fn announce_peer_streaming(
+        &self,
+        info_hash: NodeId,
+        port: u16,
+        implied_port: bool,
+        peer_tx: mpsc::Sender<SocketAddrV4>,
+    ) -> usize {
+        let nodes_with_tokens = self.get_peers(info_hash, peer_tx).await;
 
         let mut successful = 0;
         let mut tasks = Vec::new();
@@ -618,6 +623,13 @@ impl DHTHandle {
             &info_hash[..4]
         );
         successful
+    }
+
+    /// Announce peer presence for `info_hash` to the closest DHT nodes.
+    pub async fn announce_peer(&self, info_hash: NodeId, port: u16, implied_port: bool) -> usize {
+        let (dummy_tx, _) = mpsc::channel(1);
+        self.announce_peer_streaming(info_hash, port, implied_port, dummy_tx)
+            .await
     }
 }
 

@@ -3,7 +3,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Tabs, Wrap},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Tabs, Wrap,
+    },
 };
 
 use crate::{
@@ -60,10 +62,7 @@ fn draw_top_bar(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
         .style(Style::default().bg(p.header_bg));
 
     let search_badge = if app.search_query.is_empty() {
-        Span::styled(
-            " [/:Search] ",
-            Style::default().fg(p.text_muted),
-        )
+        Span::styled(" [/:Search] ", Style::default().fg(p.text_muted))
     } else {
         Span::styled(
             format!(" [Filter: \"{}\"] ", app.search_query),
@@ -170,10 +169,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
 
                 let line = Line::from(vec![
                     Span::styled(format!("{}{}{}", indent, marker, e.label), style),
-                    Span::styled(
-                        format!(" ({})", e.count),
-                        Style::default().fg(p.text_muted),
-                    ),
+                    Span::styled(format!(" ({})", e.count), Style::default().fg(p.text_muted)),
                 ]);
                 ListItem::new(line).style(if is_cursor {
                     Style::default().bg(p.selected_bg)
@@ -253,20 +249,18 @@ fn draw_torrents_table(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
             };
             let size_str = format_bytes(t.size);
             let prog_bar = render_mini_progress(t.progress, 8);
-            let prog_str = format!("{} {:>5.1}%", prog_bar, (t.progress * 100.0).clamp(0.0, 100.0));
+            let prog_str = format!(
+                "{} {:>5.1}%",
+                prog_bar,
+                (t.progress * 100.0).clamp(0.0, 100.0)
+            );
             let status_color = status_color(&t.status, p);
             let down_str = format_speed(t.download_speed);
             let up_str = format_speed(t.upload_speed);
 
             Row::new(vec![
-                Cell::from(Span::styled(
-                    name_str,
-                    Style::default().fg(p.text_primary),
-                )),
-                Cell::from(Span::styled(
-                    cat_str,
-                    Style::default().fg(p.text_secondary),
-                )),
+                Cell::from(Span::styled(name_str, Style::default().fg(p.text_primary))),
+                Cell::from(Span::styled(cat_str, Style::default().fg(p.text_secondary))),
                 Cell::from(Span::styled(
                     size_str,
                     Style::default().fg(p.text_secondary),
@@ -422,12 +416,20 @@ fn draw_details_panel(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
     // 3. Tab body
     match app.detail_tab {
         DetailTab::General => draw_general_tab(f, &selected, p, chunks[2]),
-        DetailTab::Trackers => {
-            draw_trackers_tab(f, app.current_detail.as_ref(), app.detail_scroll, p, chunks[2])
-        }
-        DetailTab::Peers => {
-            draw_peers_tab(f, app.current_detail.as_ref(), app.detail_scroll, p, chunks[2])
-        }
+        DetailTab::Trackers => draw_trackers_tab(
+            f,
+            app.current_detail.as_ref(),
+            app.detail_scroll,
+            p,
+            chunks[2],
+        ),
+        DetailTab::Peers => draw_peers_tab(
+            f,
+            app.current_detail.as_ref(),
+            app.detail_scroll,
+            p,
+            chunks[2],
+        ),
         DetailTab::Files => draw_files_tab(
             f,
             app.current_detail.as_ref(),
@@ -488,7 +490,10 @@ fn draw_piece_map_bar(
         "█".repeat(filled),
         Style::default().fg(p.accent_green),
     ));
-    spans.push(Span::styled("░".repeat(empty), Style::default().fg(p.border)));
+    spans.push(Span::styled(
+        "░".repeat(empty),
+        Style::default().fg(p.border),
+    ));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -574,7 +579,14 @@ fn draw_general_tab(f: &mut Frame, t: &TorrentItem, p: &ThemePalette, area: Rect
             ),
             Span::styled("Storage:    ", Style::default().fg(p.text_muted)),
             Span::styled(
-                format!("{:<14}", if t.storage.is_empty() { "default" } else { &t.storage }),
+                format!(
+                    "{:<14}",
+                    if t.storage.is_empty() {
+                        "default"
+                    } else {
+                        &t.storage
+                    }
+                ),
                 Style::default().fg(p.accent_purple),
             ),
             Span::styled("Sequential: ", Style::default().fg(p.text_muted)),
@@ -818,7 +830,11 @@ fn draw_files_tab(
         .map(|file| {
             let rel = sanitize_relative_path(&file.path, torrent_name);
             let bar = render_mini_progress(file.progress, 8);
-            let prog = format!("{} {:>5.1}%", bar, (file.progress * 100.0).clamp(0.0, 100.0));
+            let prog = format!(
+                "{} {:>5.1}%",
+                bar,
+                (file.progress * 100.0).clamp(0.0, 100.0)
+            );
             let prio = if file.priority.is_empty() {
                 "Normal".to_string()
             } else {
@@ -940,9 +956,8 @@ fn draw_login_screen(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
         "•".repeat(app.login_pass.chars().count())
     };
 
-    let cursor_for = |field: LoginField| -> &'static str {
-        if app.login_field == field { "█" } else { "" }
-    };
+    let cursor_for =
+        |field: LoginField| -> &'static str { if app.login_field == field { "█" } else { "" } };
 
     let mut lines = vec![
         Line::from(""),
@@ -1085,7 +1100,10 @@ fn draw_remove_modal(
         Line::from(""),
         Line::from(vec![
             Span::styled("  [Space/Tab]", Style::default().fg(p.accent_blue)),
-            Span::styled(" Toggle Delete Files   ", Style::default().fg(p.text_secondary)),
+            Span::styled(
+                " Toggle Delete Files   ",
+                Style::default().fg(p.text_secondary),
+            ),
             Span::styled("[Enter/y]", Style::default().fg(p.accent_red)),
             Span::styled(" Confirm   ", Style::default().fg(p.text_secondary)),
             Span::styled("[Esc/n]", Style::default().fg(p.accent_green)),
@@ -1227,22 +1245,43 @@ fn draw_help_modal(f: &mut Frame, p: &ThemePalette, area: Rect) {
 
     let lines = vec![
         Line::from(""),
-        row("j / k or ↑ / ↓", "Move selection up / down (or scroll active pane)"),
+        row(
+            "j / k or ↑ / ↓",
+            "Move selection up / down (or scroll active pane)",
+        ),
         row("g / G", "Jump to first / last item"),
-        row("Tab / Shift+Tab", "Cycle focus between Sidebar, Torrents, and Details"),
-        row("Space / Ctrl+A", "Toggle multi-select on torrent / Select all"),
+        row(
+            "Tab / Shift+Tab",
+            "Cycle focus between Sidebar, Torrents, and Details",
+        ),
+        row(
+            "Space / Ctrl+A",
+            "Toggle multi-select on torrent / Select all",
+        ),
         row("Enter / d", "Toggle bottom Details panel"),
         row("b", "Toggle left Categories & Status sidebar"),
-        row("1 / 2 / 3 / 4", "Switch Details tab (General, Trackers, Peers, Content)"),
+        row(
+            "1 / 2 / 3 / 4",
+            "Switch Details tab (General, Trackers, Peers, Content)",
+        ),
         row("[ / ]", "Previous / Next Details tab"),
         row("r / p", "Resume / Pause selected torrent(s)"),
-        row("c / a", "Force Recheck / Force Reannounce selected torrent(s)"),
+        row(
+            "c / a",
+            "Force Recheck / Force Reannounce selected torrent(s)",
+        ),
         row("o", "Toggle Sequential vs Rarest-First download mode"),
-        row("x / Delete", "Remove selected torrent(s) (with delete-files option)"),
+        row(
+            "x / Delete",
+            "Remove selected torrent(s) (with delete-files option)",
+        ),
         row("s / S", "Cycle sort column / Invert sort order (▲/▼)"),
         row("/", "Search / Filter torrents by name, category, or hash"),
         row("l", "Open live Daemon Log Viewer modal"),
-        row("t", "Cycle color theme (Dark, Dracula, Nord, Matrix, Light)"),
+        row(
+            "t",
+            "Cycle color theme (Dark, Dracula, Nord, Matrix, Light)",
+        ),
         row("O / Q / q", "Logout / Shutdown daemon / Quit TUI"),
     ];
 

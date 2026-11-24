@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use dashmap::DashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Notify, mpsc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

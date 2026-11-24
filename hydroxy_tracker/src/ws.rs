@@ -20,11 +20,7 @@ use tokio_rustls::{
 };
 use url::Url;
 
-use crate::{
-    Peer, Tracker, TrackerEvents, TrackerResponse,
-    errors::TrackerError,
-    http_s,
-};
+use crate::{Peer, Tracker, TrackerEvents, TrackerResponse, errors::TrackerError, http_s};
 
 enum WsStream {
     Plain(TcpStream),
@@ -110,13 +106,13 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
     // Resolve host via bounded DNS cache and establish TCP connection using SocketAddr
     let addr_str = format!("{}:{}", host, port);
     let resolved_addr = crate::resolve_host_port(host, port).await?;
-    let tcp_stream = tokio::time::timeout(
-        Duration::from_secs(8),
-        TcpStream::connect(resolved_addr),
-    )
-    .await
-    .map_err(|_| TrackerError::NetworkError(format!("Connection timeout to {}", addr_str)))?
-    .map_err(|e| TrackerError::NetworkError(format!("Failed to connect to {}: {}", addr_str, e)))?;
+    let tcp_stream =
+        tokio::time::timeout(Duration::from_secs(8), TcpStream::connect(resolved_addr))
+            .await
+            .map_err(|_| TrackerError::NetworkError(format!("Connection timeout to {}", addr_str)))?
+            .map_err(|e| {
+                TrackerError::NetworkError(format!("Failed to connect to {}: {}", addr_str, e))
+            })?;
 
     // Establish TLS if wss://
     let mut stream = if is_secure {
@@ -235,12 +231,11 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
     write_frame(&mut stream, 0x1, req_payload.as_bytes()).await?;
 
     // Read Announce Response Frame
-    let (opcode, payload) = tokio::time::timeout(
-        Duration::from_secs(10),
-        read_frame(&mut stream),
-    )
-    .await
-    .map_err(|_| TrackerError::NetworkError("Timeout waiting for tracker response frame".into()))??;
+    let (opcode, payload) = tokio::time::timeout(Duration::from_secs(10), read_frame(&mut stream))
+        .await
+        .map_err(|_| {
+            TrackerError::NetworkError("Timeout waiting for tracker response frame".into())
+        })??;
 
     // Send close frame politely
     write_frame(&mut stream, 0x8, &[]).await.ok();

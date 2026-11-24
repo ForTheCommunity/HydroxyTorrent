@@ -45,10 +45,24 @@ pub struct HydroxyConfig {
     pub newly_generated_credentials: Option<GeneratedCredentials>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_zero_u16() -> u16 {
+    0
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkConfig {
     pub listen_address: IpAddr,
     pub listen_port: u16,
+    #[serde(default = "default_true")]
+    pub dht_enabled: bool,
+    #[serde(default = "default_zero_u16")]
+    pub dht_port: u16,
+    #[serde(default)]
+    pub dht_bootstrap_routers: Vec<String>,
 }
 
 fn default_max_active_downloads() -> usize {
@@ -373,11 +387,15 @@ listen_port = 10000
 username = "admin"
 password = "hashed_password"
 "#;
-        let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize legacy config");
+        let config: HydroxyConfig =
+            toml::from_str(toml_str).expect("Failed to deserialize legacy config");
         assert_eq!(config.effective_max_active_downloads(), 7);
         assert_eq!(config.session_config.max_active_uploads, 5);
         assert_eq!(config.session_config.dont_count_slow_torrents, true);
-        assert_eq!(config.session_config.slow_torrent_dl_rate_threshold_kbps, 10);
+        assert_eq!(
+            config.session_config.slow_torrent_dl_rate_threshold_kbps,
+            10
+        );
         assert_eq!(config.session_config.slow_torrent_inactive_timer_secs, 60);
         assert_eq!(config.session_config.max_peers_per_torrent, 50);
         assert_eq!(config.session_config.max_total_peers, 300);
@@ -411,13 +429,20 @@ listen_port = 10000
 username = "admin"
 password = "hashed_password"
 "#;
-        let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize multiple storages");
+        let config: HydroxyConfig =
+            toml::from_str(toml_str).expect("Failed to deserialize multiple storages");
         assert_eq!(config.storage_config.len(), 2);
         assert_eq!(config.storage_config[0].name, "ssd");
-        assert_eq!(config.storage_config[0].temp_directory.as_deref(), Some("/mnt/nvme/incomplete"));
+        assert_eq!(
+            config.storage_config[0].temp_directory.as_deref(),
+            Some("/mnt/nvme/incomplete")
+        );
         assert_eq!(config.storage_config[1].name, "hdd");
         assert_eq!(config.storage_config[1].temp_directory, None);
-        assert_eq!(config.get_storage("hdd").unwrap().download_directory, "/mnt/hdd/downloads");
+        assert_eq!(
+            config.get_storage("hdd").unwrap().download_directory,
+            "/mnt/hdd/downloads"
+        );
     }
 
     #[test]
@@ -448,7 +473,8 @@ listen_port = 10000
 username = "admin"
 password = "hashed_password"
 "#;
-        let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize new config");
+        let config: HydroxyConfig =
+            toml::from_str(toml_str).expect("Failed to deserialize new config");
         assert_eq!(config.session_config.max_active_downloads, 25);
         assert_eq!(config.session_config.max_active_uploads, 10);
         assert_eq!(config.session_config.max_download_speed_kbps, 5000);
@@ -480,7 +506,8 @@ listen_port = 10000
 username = "admin"
 password = "hashed_password"
 "#;
-        let config: HydroxyConfig = toml::from_str(toml_str).expect("Failed to deserialize limitations config");
+        let config: HydroxyConfig =
+            toml::from_str(toml_str).expect("Failed to deserialize limitations config");
         assert_eq!(config.session_config.max_active_downloads, 15);
         assert_eq!(config.effective_max_active_downloads(), 15);
         assert_eq!(config.session_config.max_active_uploads, 5);
