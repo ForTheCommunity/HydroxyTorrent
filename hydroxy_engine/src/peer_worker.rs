@@ -271,11 +271,11 @@ impl PeerWorker {
                     .await?;
             }
 
-            // If remote peer supports BEP 5 DHT and torrent is not private, send Port message
+            // If remote peer supports BEP 5 / BEP 32 DHT and torrent is not private, send Port message
             if supports_dht && !is_private {
                 if let Some(ref dht) = dht_handle {
-                    if let Ok(std::net::SocketAddr::V4(v4)) = dht.local_addr() {
-                        PeerMessage::Port(v4.port()).write(&mut tcp_stream).await?;
+                    if let Ok(addr) = dht.local_addr() {
+                        PeerMessage::Port(addr.port()).write(&mut tcp_stream).await?;
                     }
                 }
             }
@@ -1127,13 +1127,11 @@ impl PeerWorker {
             PeerMessage::Port(port) => {
                 if !self.is_private && port != 0 {
                     if let Some(ref dht) = self.dht_handle {
-                        if let IpAddr::V4(ipv4) = self.ip_addr {
-                            let target = std::net::SocketAddrV4::new(ipv4, port);
-                            let dht_clone = dht.clone();
-                            tokio::spawn(async move {
-                                let _ = dht_clone.ping(target).await;
-                            });
-                        }
+                        let target = std::net::SocketAddr::new(self.ip_addr, port);
+                        let dht_clone = dht.clone();
+                        tokio::spawn(async move {
+                            let _ = dht_clone.ping(target).await;
+                        });
                     }
                 }
             }

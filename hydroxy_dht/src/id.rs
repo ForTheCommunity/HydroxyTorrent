@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use rand::Rng;
 
@@ -10,12 +10,26 @@ pub type NodeId = [u8; 20];
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 pub struct NodeInfo {
     pub id: NodeId,
-    pub ip_v4_addr: SocketAddrV4,
+    pub addr: SocketAddr,
 }
 
 impl NodeInfo {
-    pub fn new(id: NodeId, ip_v4_addr: SocketAddrV4) -> Self {
-        Self { id, ip_v4_addr }
+    pub fn new(id: NodeId, addr: SocketAddr) -> Self {
+        Self { id, addr }
+    }
+
+    pub fn new_v4(id: NodeId, v4: SocketAddrV4) -> Self {
+        Self {
+            id,
+            addr: SocketAddr::V4(v4),
+        }
+    }
+
+    pub fn new_v6(id: NodeId, v6: SocketAddrV6) -> Self {
+        Self {
+            id,
+            addr: SocketAddr::V6(v6),
+        }
     }
 }
 
@@ -36,12 +50,7 @@ pub fn xor_distance(n_1: &NodeId, n_2: &NodeId) -> NodeId {
 }
 
 /// Compares the distance of 'Node A' to 'Target' Versus 'Node B' to 'Target'.
-/// Case - 1 => Returns Ordering::Less if 'Node A' is closer to 'Target' than 'Node B'.
-/// Case - 2 => Returns Ordering::Greator if 'Node B' is closer to 'Target' than 'Node B'.
-/// Case - 3 => Returns Equal if Distance is same, which is impossible, this only happens if 'Node A' == 'Node B'.
 pub fn compare_distance(target: &NodeId, n_1: &NodeId, n_2: &NodeId) -> std::cmp::Ordering {
-    // comparing their XOR results from the most significant
-    // byte (index 0) to the least significant byte (index 19).
     for i in 0..20 {
         let n1_distance = n_1[i] ^ target[i];
         let n2_distance = n_2[i] ^ target[i];
@@ -63,22 +72,22 @@ pub fn common_prefix_len(n_1: &NodeId, n_2: &NodeId) -> usize {
     160
 }
 
-/// Encodes a list of NodeInfo into Compact Node Info Binary Format (BEP-5).
-/// Each Node is represented as 26 Bytes.
-/// Node Id (20 Bytes) + IPv4 Addr (4 Bytes) + Port (2 Bytes) [big-endian]
+/// Encodes IPv4 NodeInfo entries into Compact Node Info Binary Format (BEP 0005 `nodes`).
+/// Each IPv4 node is 26 bytes: Node Id (20) + IPv4 Addr (4) + Port (2, big-endian).
 pub fn compact_nodes_encode(nodes: &[NodeInfo]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(nodes.len() * 26);
     for node in nodes {
-        buf.extend_from_slice(&node.id);
-        buf.extend_from_slice(&node.ip_v4_addr.ip().octets());
-        buf.extend_from_slice(&node.ip_v4_addr.port().to_be_bytes());
+        if let SocketAddr::V4(v4) = node.addr {
+            buf.extend_from_slice(&node.id);
+            buf.extend_from_slice(&v4.ip().octets());
+            buf.extend_from_slice(&v4.port().to_be_bytes());
+        }
     }
     buf
 }
 
-/// Decodes Compact Node Info Binary Format into a list of NodeInfo (BEP-5).
+/// Decodes Compact IPv4 Node Info Binary Format (BEP 0005 `nodes`, 26 bytes per node).
 pub fn compact_nodes_decode(bytes: &[u8]) -> Result<Vec<NodeInfo>, DHTError> {
-    // each Encoded NodeInfo has exact length of 26, so overall length also should be multiple of 26
     if bytes.len() % 26 != 0 {
         return Err(DHTError::InvalidCompactNodeInfo(format!(
             "Length: {} is not a multiple of 26",
@@ -92,36 +101,120 @@ pub fn compact_nodes_decode(bytes: &[u8]) -> Result<Vec<NodeInfo>, DHTError> {
         node_id.copy_from_slice(&chunk[..20]);
         let ip_v4 = Ipv4Addr::new(chunk[20], chunk[21], chunk[22], chunk[23]);
         let port = u16::from_be_bytes([chunk[24], chunk[25]]);
-        nodes.push(NodeInfo {
-            id: node_id,
-            ip_v4_addr: SocketAddrV4::new(ip_v4, port),
-        });
+        if port != 0 && !ip_v4.is_unspecified() && !ip_v4.is_broadcast() {
+            nodes.push(NodeInfo::new_v4(node_id, SocketAddrV4::new(ip_v4, port)));
+        }
     }
 
     Ok(nodes)
 }
 
-/// Encodes an IPv4 socket address into 6-byte compact peer format (BEP 5 / 23).
-pub fn compact_peer_encode(ip_v4_addr: &SocketAddrV4) -> [u8; 6] {
-    let mut buf = [0u8; 6];
-    buf[..4].copy_from_slice(&ip_v4_addr.ip().octets());
-    buf[4..].copy_from_slice(&ip_v4_addr.port().to_be_bytes());
+/// Encodes IPv6 NodeInfo entries into Compact IPv6 Node Info Binary Format (BEP 0032 `nodes6`).
+/// Each IPv6 node is 38 bytes: Node Id (20) + IPv6 Addr (16) + Port (2, big-endian).
+pub fn compact_nodes6_encode(nodes: &[NodeInfo]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(nodes.len() * 38);
+    for node in nodes {
+        if let SocketAddr::V6(v6) = node.addr {
+            buf.extend_from_slice(&node.id);
+            buf.extend_from_slice(&v6.ip().octets());
+            buf.extend_from_slice(&v6.port().to_be_bytes());
+        }
+    }
     buf
 }
 
-/// Decodes encoded 6-bytes IPv4 Addr (BEP 5 / 23).
-pub fn compact_peer_decode(enc_bytes: &[u8]) -> Option<SocketAddrV4> {
-    if enc_bytes.len() != 6 {
-        return None;
+/// Decodes Compact IPv6 Node Info Binary Format (BEP 0032 `nodes6`, 38 bytes per node).
+pub fn compact_nodes6_decode(bytes: &[u8]) -> Result<Vec<NodeInfo>, DHTError> {
+    if bytes.len() % 38 != 0 {
+        return Err(DHTError::InvalidCompactNodeInfo(format!(
+            "Length: {} is not a multiple of 38",
+            bytes.len()
+        )));
     }
 
-    let ip_v4_addr = Ipv4Addr::new(enc_bytes[0], enc_bytes[1], enc_bytes[2], enc_bytes[3]);
-    let port = u16::from_be_bytes([enc_bytes[4], enc_bytes[5]]);
-    if port == 0 {
-        return None;
+    let mut nodes = Vec::with_capacity(bytes.len() / 38);
+    for chunk in bytes.chunks_exact(38) {
+        let mut node_id = [0u8; 20];
+        node_id.copy_from_slice(&chunk[..20]);
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&chunk[20..36]);
+        let ip_v6 = Ipv6Addr::from(octets);
+        let port = u16::from_be_bytes([chunk[36], chunk[37]]);
+        if port == 0 || ip_v6.is_unspecified() || ip_v6.is_multicast() {
+            continue;
+        }
+        if let Some(mapped_v4) = ip_v6.to_ipv4_mapped() {
+            nodes.push(NodeInfo::new_v4(
+                node_id,
+                SocketAddrV4::new(mapped_v4, port),
+            ));
+        } else {
+            nodes.push(NodeInfo::new_v6(
+                node_id,
+                SocketAddrV6::new(ip_v6, port, 0, 0),
+            ));
+        }
     }
 
-    Some(SocketAddrV4::new(ip_v4_addr, port))
+    Ok(nodes)
+}
+
+/// Encodes a socket address into compact peer format:
+/// - IPv4: 6 bytes (BEP 0005 / BEP 0023)
+/// - IPv6: 18 bytes (BEP 0032 / BEP 0007)
+pub fn compact_peer_encode(addr: &SocketAddr) -> Vec<u8> {
+    match addr {
+        SocketAddr::V4(v4) => {
+            let mut buf = Vec::with_capacity(6);
+            buf.extend_from_slice(&v4.ip().octets());
+            buf.extend_from_slice(&v4.port().to_be_bytes());
+            buf
+        }
+        SocketAddr::V6(v6) => {
+            if let Some(mapped_v4) = v6.ip().to_ipv4_mapped() {
+                let mut buf = Vec::with_capacity(6);
+                buf.extend_from_slice(&mapped_v4.octets());
+                buf.extend_from_slice(&v6.port().to_be_bytes());
+                buf
+            } else {
+                let mut buf = Vec::with_capacity(18);
+                buf.extend_from_slice(&v6.ip().octets());
+                buf.extend_from_slice(&v6.port().to_be_bytes());
+                buf
+            }
+        }
+    }
+}
+
+/// Decodes a compact peer entry:
+/// - 6 bytes -> `SocketAddr::V4` (BEP 0005)
+/// - 18 bytes -> `SocketAddr::V6` (BEP 0032, normalizing IPv4-mapped addresses to V4)
+pub fn compact_peer_decode(enc_bytes: &[u8]) -> Option<SocketAddr> {
+    match enc_bytes.len() {
+        6 => {
+            let ip_v4 = Ipv4Addr::new(enc_bytes[0], enc_bytes[1], enc_bytes[2], enc_bytes[3]);
+            let port = u16::from_be_bytes([enc_bytes[4], enc_bytes[5]]);
+            if port == 0 {
+                return None;
+            }
+            Some(SocketAddr::V4(SocketAddrV4::new(ip_v4, port)))
+        }
+        18 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&enc_bytes[0..16]);
+            let ip_v6 = Ipv6Addr::from(octets);
+            let port = u16::from_be_bytes([enc_bytes[16], enc_bytes[17]]);
+            if port == 0 || ip_v6.is_unspecified() || ip_v6.is_multicast() {
+                return None;
+            }
+            if let Some(mapped_v4) = ip_v6.to_ipv4_mapped() {
+                Some(SocketAddr::V4(SocketAddrV4::new(mapped_v4, port)))
+            } else {
+                Some(SocketAddr::V6(SocketAddrV6::new(ip_v6, port, 0, 0)))
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -164,30 +257,35 @@ mod tests {
     }
 
     #[test]
-    fn test_compact_nodes_roundtrip() {
-        let node1 = NodeInfo {
-            id: [1u8; 20],
-            ip_v4_addr: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 6881),
-        };
-        let node2 = NodeInfo {
-            id: [2u8; 20],
-            ip_v4_addr: SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 51413),
-        };
+    fn test_compact_nodes_v4_and_v6_roundtrip() {
+        let node1 = NodeInfo::new_v4([1u8; 20], SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 6881));
+        let node2 = NodeInfo::new_v4([2u8; 20], SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 51413));
 
         let encoded = compact_nodes_encode(&[node1, node2]);
         assert_eq!(encoded.len(), 52);
 
         let decoded = compact_nodes_decode(&encoded).unwrap();
-        assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0], node1);
-        assert_eq!(decoded[1], node2);
+        assert_eq!(decoded, vec![node1, node2]);
+
+        let v6_ip: Ipv6Addr = "2406:9cc0:200:1521::99".parse().unwrap();
+        let node6 = NodeInfo::new_v6([3u8; 20], SocketAddrV6::new(v6_ip, 6881, 0, 0));
+        let encoded6 = compact_nodes6_encode(&[node6]);
+        assert_eq!(encoded6.len(), 38);
+        let decoded6 = compact_nodes6_decode(&encoded6).unwrap();
+        assert_eq!(decoded6, vec![node6]);
     }
 
     #[test]
-    fn test_compact_peer_roundtrip() {
-        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
-        let encoded = compact_peer_encode(&addr);
-        let decoded = compact_peer_decode(&encoded).unwrap();
-        assert_eq!(decoded, addr);
+    fn test_compact_peer_v4_and_v6_roundtrip() {
+        let addr4 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080));
+        let encoded4 = compact_peer_encode(&addr4);
+        assert_eq!(encoded4.len(), 6);
+        assert_eq!(compact_peer_decode(&encoded4), Some(addr4));
+
+        let v6_ip: Ipv6Addr = "2406:9cc0:200:1521::42".parse().unwrap();
+        let addr6 = SocketAddr::V6(SocketAddrV6::new(v6_ip, 51413, 0, 0));
+        let encoded6 = compact_peer_encode(&addr6);
+        assert_eq!(encoded6.len(), 18);
+        assert_eq!(compact_peer_decode(&encoded6), Some(addr6));
     }
 }

@@ -103,16 +103,41 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
     let default_port = if is_secure { 443 } else { 80 };
     let port = parsed_url.port().unwrap_or(default_port);
 
-    // Resolve host via bounded DNS cache and establish TCP connection using SocketAddr
+    // Resolve host via dual-stack DNS cache (IPv4 first, IPv6 fallback) and connect with fallback
     let addr_str = format!("{}:{}", host, port);
-    let resolved_addr = crate::resolve_host_port(host, port).await?;
-    let tcp_stream =
-        tokio::time::timeout(Duration::from_secs(8), TcpStream::connect(resolved_addr))
-            .await
-            .map_err(|_| TrackerError::NetworkError(format!("Connection timeout to {}", addr_str)))?
-            .map_err(|e| {
-                TrackerError::NetworkError(format!("Failed to connect to {}: {}", addr_str, e))
-            })?;
+    let resolved_addrs = crate::resolve_host_ports(host, port).await?;
+    let mut tcp_opt: Option<TcpStream> = None;
+    let mut last_err: Option<TrackerError> = None;
+
+    for candidate in resolved_addrs {
+        match tokio::time::timeout(Duration::from_secs(8), TcpStream::connect(candidate)).await {
+            Ok(Ok(s)) => {
+                tcp_opt = Some(s);
+                break;
+            }
+            Ok(Err(e)) => {
+                last_err = Some(TrackerError::NetworkError(format!(
+                    "Failed to connect to {}: {}",
+                    addr_str, e
+                )));
+            }
+            Err(_) => {
+                last_err = Some(TrackerError::NetworkError(format!(
+                    "Connection timeout to {}",
+                    addr_str
+                )));
+            }
+        }
+    }
+
+    let tcp_stream = match tcp_opt {
+        Some(s) => s,
+        None => {
+            return Err(last_err.unwrap_or_else(|| {
+                TrackerError::NetworkError(format!("No reachable endpoint for {}", addr_str))
+            }));
+        }
+    };
 
     // Establish TLS if wss://
     let mut stream = if is_secure {

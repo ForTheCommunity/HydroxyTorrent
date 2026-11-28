@@ -54,10 +54,10 @@ impl Resolve for HydroxyDnsResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_string();
         Box::pin(async move {
-            let addr = crate::resolve_host_port(&host, 0)
+            let addrs_vec = crate::resolve_host_ports(&host, 0)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            let addrs: Addrs = Box::new(std::iter::once(addr));
+            let addrs: Addrs = Box::new(addrs_vec.into_iter());
             Ok(addrs)
         })
     }

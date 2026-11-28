@@ -43,8 +43,27 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         }
     };
 
-    let resolved_addr = crate::resolve_host_port(host, port).await?;
+    let resolved_addrs = crate::resolve_host_ports(host, port).await?;
+    let mut last_err: Option<TrackerError> = None;
 
+    for resolved_addr in resolved_addrs {
+        match announce_to_addr(tracker, resolved_addr).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        TrackerError::NetworkError(format!("No reachable UDP endpoint for {}", tracker.announce_url))
+    }))
+}
+
+async fn announce_to_addr(
+    tracker: &Tracker,
+    resolved_addr: SocketAddr,
+) -> Result<TrackerResponse, TrackerError> {
     let bind_addr = match resolved_addr {
         SocketAddr::V4(_) => "0.0.0.0:0",
         SocketAddr::V6(_) => "[::]:0",

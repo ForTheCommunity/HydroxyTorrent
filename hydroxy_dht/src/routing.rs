@@ -1,5 +1,5 @@
 use std::{
-    net::SocketAddrV4,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -128,7 +128,7 @@ impl RoutingTable {
             .iter_mut()
             .find(|n| n.node_info.id == node_info.id)
         {
-            entry.node_info.ip_v4_addr = node_info.ip_v4_addr;
+            entry.node_info.addr = node_info.addr;
             entry.last_seen = Instant::now();
             entry.fail_count = 0;
             self.k_buckets[bucket_index].last_updated = Instant::now();
@@ -168,15 +168,15 @@ impl RoutingTable {
     }
 
     /// Record a successful response from a node.
-    pub fn record_success(&mut self, id: &NodeId, addr: SocketAddrV4) {
+    pub fn record_success(&mut self, id: &NodeId, addr: SocketAddr) {
         self.inject_node(NodeInfo::new(*id, addr));
     }
 
     /// Record a failure (timeout / bad packet) from a node address.
-    pub fn record_failure(&mut self, addr: &SocketAddrV4) {
+    pub fn record_failure(&mut self, addr: &SocketAddr) {
         for bucket in &mut self.k_buckets {
             for entry in &mut bucket.nodes {
-                if entry.node_info.ip_v4_addr == *addr {
+                if entry.node_info.addr == *addr {
                     entry.fail_count = entry.fail_count.saturating_add(1);
                     return;
                 }
@@ -277,7 +277,7 @@ impl RoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, SocketAddrV4};
 
     #[test]
     fn test_routing_table_insert_and_closest() {
@@ -289,7 +289,7 @@ mod tests {
         for i in 1..=20 {
             let mut id = [0u8; 20];
             id[0] = i as u8;
-            let info = NodeInfo::new(
+            let info = NodeInfo::new_v4(
                 id,
                 SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, i as u8), 6881),
             );
@@ -314,7 +314,7 @@ mod tests {
         for i in 1..=8 {
             let mut id = [0u8; 20];
             id[0] = 0x80 | i as u8;
-            let info = NodeInfo::new(
+            let info = NodeInfo::new_v4(
                 id,
                 SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, i as u8), 6881),
             );
@@ -324,14 +324,14 @@ mod tests {
         assert_eq!(rt.total_nodes(), 8);
 
         // Fail node 1 twice so it becomes bad
-        let bad_addr = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 6881);
+        let bad_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 6881));
         rt.record_failure(&bad_addr);
         rt.record_failure(&bad_addr);
 
         // Now insert 9th node - it should replace the bad node
         let mut new_id = [0u8; 20];
         new_id[0] = 0x80 | 9;
-        let new_info = NodeInfo::new(
+        let new_info = NodeInfo::new_v4(
             new_id,
             SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 9), 6881),
         );
@@ -341,7 +341,7 @@ mod tests {
 
         // Node 1 should be gone
         let all = rt.all_nodes();
-        assert!(!all.iter().any(|n| n.ip_v4_addr == bad_addr));
+        assert!(!all.iter().any(|n| n.addr == bad_addr));
         assert!(all.iter().any(|n| n.id == new_id));
     }
 

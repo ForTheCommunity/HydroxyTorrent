@@ -40,6 +40,7 @@
 | **[BEP 0020](https://www.bittorrent.org/beps/bep_0020.html)** | Peer ID Conventions | `hydroxy_utils` | Standardized Azureus-style client Peer ID formatting (`-HY0001-...`) and parsing logic for popular client identification. |
 | **[BEP 0023](https://www.bittorrent.org/beps/bep_0023.html)** | Compact Peer List Format | `hydroxy_tracker` | Compact 6-byte IPv4 peer list parsing (4-byte IP + 2-byte port in network byte order) for HTTP and UDP trackers. |
 | **[BEP 0027](https://www.bittorrent.org/beps/bep_0027.html)** | Private Torrents | `hydroxy_utils`<br>`hydroxy_engine` | Enforcing `info.private == 1` by disabling decentralized peer discovery (DHT announces, `Port` exchange, and PEX). |
+| **[BEP 0032](https://www.bittorrent.org/beps/bep_0032.html)** | IPv6 Extension for DHT | `hydroxy_dht`<br>`hydroxy_engine` | Dual-stack DHT with separate IPv4/IPv6 Kademlia routing tables, `"want"` (`"n4"`/`"n6"`) negotiation, 38-byte `nodes6` encoding/decoding, and 18-byte IPv6 peer `values`. |
 | **[BEP 0048](https://www.bittorrent.org/beps/bep_0048.html)** | Tracker Protocol Extension: Scrape | `hydroxy_tracker` | Scrape requests over HTTP (`/scrape`) and UDP (action `2`) to fetch seeder, leecher, and downloaded statistics. |
 | **WebSocket Trackers** | WebTorrent Tracker Extension | `hydroxy_tracker` | `ws://` and `wss://` JSON-RPC tracker exchange for browser and WebTorrent swarms. |
 

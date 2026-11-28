@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::{IpAddr, SocketAddrV4},
+    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
 
@@ -1861,18 +1861,20 @@ impl TorrentTask {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        let (raw_peer_tx, mut raw_peer_rx) = mpsc::channel::<SocketAddrV4>(128);
+        let (raw_peer_tx, mut raw_peer_rx) = mpsc::channel::<SocketAddr>(128);
         let batch_peer_tx = peer_tx.clone();
 
         let bridge_handle = tokio::spawn(async move {
             let mut discovered = 0usize;
             let mut batch = Vec::new();
             while let Some(addr) = raw_peer_rx.recv().await {
+                let ip = Peer::normalize_ip(addr.ip());
+                let port = addr.port();
+                if port == 0 || !Peer::is_valid_peer_ip(ip) {
+                    continue;
+                }
                 discovered += 1;
-                batch.push(Peer {
-                    ip_addr: IpAddr::V4(*addr.ip()),
-                    port: addr.port(),
-                });
+                batch.push(Peer { ip_addr: ip, port });
                 if batch.len() >= 8 {
                     let _ = batch_peer_tx.send(std::mem::take(&mut batch)).await;
                 }

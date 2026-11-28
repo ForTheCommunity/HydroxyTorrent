@@ -67,11 +67,17 @@ impl HydroxyEngine {
         ));
 
         let dht_handle = if config.network_config.dht_enabled {
-            let bind_ip = match listen_address {
-                std::net::IpAddr::V4(v4) => v4,
-                std::net::IpAddr::V6(_) => std::net::Ipv4Addr::UNSPECIFIED,
-            };
             let dht_port = config.network_config.dht_port;
+            let (bind_v4_ip, bind_addr_v6) = match listen_address {
+                std::net::IpAddr::V4(v4) => (v4, None),
+                std::net::IpAddr::V6(v6) if v6.is_unspecified() => {
+                    (std::net::Ipv4Addr::UNSPECIFIED, None)
+                }
+                std::net::IpAddr::V6(v6) => (
+                    std::net::Ipv4Addr::UNSPECIFIED,
+                    Some(std::net::SocketAddrV6::new(v6, dht_port, 0, 0)),
+                ),
+            };
 
             let bootstrap_routers = if config.network_config.dht_bootstrap_routers.is_empty() {
                 hydroxy_dht::DEFAULT_BOOTSTRAP_ROUTERS
@@ -83,7 +89,9 @@ impl HydroxyEngine {
             };
 
             let dht_cfg = hydroxy_dht::DHTConfig {
-                bind_addr: std::net::SocketAddrV4::new(bind_ip, dht_port),
+                bind_addr: std::net::SocketAddrV4::new(bind_v4_ip, dht_port),
+                bind_addr_v6,
+                enable_ipv6: listen_address.is_unspecified() || listen_address.is_ipv6(),
                 bootstrap_routers,
                 ..Default::default()
             };
