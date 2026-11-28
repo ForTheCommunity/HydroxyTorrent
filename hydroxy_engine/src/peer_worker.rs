@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, Ipv4Addr},
     sync::{
         Arc,
@@ -21,7 +21,7 @@ use tracing::{info, warn};
 
 use crate::{
     errors::EngineError,
-    pex,
+    fast_ext, pex,
     piece_allocator::{PieceAllocator, PieceStatus},
     piece_assembler::PieceAssembler,
     stats::stats::PeerConnectionState,
@@ -35,6 +35,9 @@ const MAX_PIECE_COOLDOWN: Duration = Duration::from_secs(300);
 const MAX_VERIFICATION_ATTEMPTS: usize = 5;
 const IDLE_UNCHOKED_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_CHOKED_WAIT_INTERVAL: Duration = Duration::from_secs(30);
+const REJECTED_PIECE_COOLDOWN: Duration = Duration::from_secs(5);
+const MAX_CHOKED_REJECTED_REQUESTS: u32 = 256;
+const MAX_SUGGESTED_PIECES: usize = 64;
 
 struct PeerSessionGuard {
     stats_registry: Arc<StatsRegistry>,
@@ -75,6 +78,8 @@ pub struct PeerState {
     pub peer_choking: bool,
     pub peer_interested: bool,
     pub bitfield: Vec<u8>,
+    pub received_bitfield_state: bool,
+    pub peer_has_all: bool,
 }
 
 #[allow(dead_code)]
@@ -100,6 +105,7 @@ pub struct PeerWorker {
     pub have_rx: broadcast::Receiver<u32>,
     pub supports_extensions: bool,
     pub supports_dht: bool,
+    pub supports_fast: bool,
     pub dht_handle: Option<DHTHandle>,
     pub is_private: bool,
     pub remote_ut_pex_id: Option<u8>,
@@ -111,6 +117,12 @@ pub struct PeerWorker {
     pub failed_pieces: HashMap<u32, (usize, Instant)>,
     pub banned_peers: Arc<Mutex<HashSet<IpAddr>>>,
     pub peer_failed_pieces: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    pub am_allowed_fast: HashSet<u32>,
+    pub peer_allowed_fast: HashSet<u32>,
+    pub peer_suggested: VecDeque<u32>,
+    pub sent_requests: HashMap<(u32, u32, u32), u32>,
+    pub rejected_pieces: HashMap<u32, Instant>,
+    pub choked_rejected_count: u32,
 }
 
 impl PeerWorker {
@@ -140,6 +152,7 @@ impl PeerWorker {
 
         self.supports_extensions = handshake.supports_extensions();
         self.supports_dht = handshake.supports_dht();
+        self.supports_fast = handshake.supports_fast();
         self.run_with_stream(tcp_stream, handshake.peer_id).await
     }
 
@@ -158,6 +171,38 @@ impl PeerWorker {
         self.active_piece_guard.store(raw, Ordering::Relaxed);
     }
 
+    fn can_download(&self) -> bool {
+        !self.peer_state.peer_choking || (self.supports_fast && !self.peer_allowed_fast.is_empty())
+    }
+
+    fn can_request_piece(&self, piece_idx: u32) -> bool {
+        !self.peer_state.peer_choking
+            || (self.supports_fast && self.peer_allowed_fast.contains(&piece_idx))
+    }
+
+    fn record_sent_request(&mut self, index: u32, begin: u32, length: u32) {
+        *self
+            .sent_requests
+            .entry((index, begin, length))
+            .or_insert(0) += 1;
+    }
+
+    fn consume_sent_request(&mut self, index: u32, begin: u32, length: u32) -> bool {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.sent_requests.entry((index, begin, length))
+        {
+            let count = entry.get_mut();
+            if *count > 1 {
+                *count -= 1;
+            } else {
+                entry.remove();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     async fn run_with_stream(
         mut self,
         mut tcp_stream: TcpStream,
@@ -165,11 +210,12 @@ impl PeerWorker {
     ) -> Result<(), EngineError> {
         let info_hash_sha1 = OtherInfos::to_sha1(&self.info_hash);
 
-        let (our_bitfield, has_incomplete) = {
+        let (our_bitfield, has_incomplete, completed_count) = {
             let alloc = self.piece_allocator.lock().await;
             (
                 alloc.to_bitfield(self.total_pieces),
                 alloc.has_incomplete_pieces(),
+                alloc.completed_pieces_count(),
             )
         };
 
@@ -179,8 +225,26 @@ impl PeerWorker {
         }
         let supports_extensions = self.supports_extensions;
         let supports_dht = self.supports_dht;
+        let supports_fast = self.supports_fast;
         let is_private = self.is_private;
         let dht_handle = self.dht_handle.clone();
+
+        let fast_list: Vec<u32> = if supports_fast {
+            if let IpAddr::V4(ipv4) = self.ip_addr {
+                fast_ext::generate_allowed_fast_set(
+                    ipv4,
+                    &self.info_hash,
+                    self.total_pieces as u32,
+                    fast_ext::DEFAULT_ALLOWED_FAST_K,
+                )
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        self.am_allowed_fast = fast_list.iter().copied().collect();
+        let sent_have_all = supports_fast && self.total_pieces > 0 && !has_incomplete;
 
         tokio::time::timeout(Duration::from_secs(10), async {
             // If remote peer supports BEP 10 Extension Protocol and torrent is not private, send Extended Handshake
@@ -194,6 +258,23 @@ impl PeerWorker {
                 .await?;
             }
 
+            // Send initial piece availability per BEP 0003 / BEP 0006 immediately after handshake
+            if supports_fast {
+                if sent_have_all {
+                    PeerMessage::HaveAll.write(&mut tcp_stream).await?;
+                } else if completed_count == 0 {
+                    PeerMessage::HaveNone.write(&mut tcp_stream).await?;
+                } else if !our_bitfield.is_empty() {
+                    PeerMessage::Bitfield(our_bitfield)
+                        .write(&mut tcp_stream)
+                        .await?;
+                }
+            } else if !our_bitfield.is_empty() {
+                PeerMessage::Bitfield(our_bitfield)
+                    .write(&mut tcp_stream)
+                    .await?;
+            }
+
             // If remote peer supports BEP 5 DHT and torrent is not private, send Port message
             if supports_dht && !is_private {
                 if let Some(ref dht) = dht_handle {
@@ -203,11 +284,13 @@ impl PeerWorker {
                 }
             }
 
-            // Send local bitfield immediately after handshake per BEP 0003
-            if !our_bitfield.is_empty() {
-                PeerMessage::Bitfield(our_bitfield)
-                    .write(&mut tcp_stream)
-                    .await?;
+            // BEP 0006: Advertise canonical Allowed Fast piece set to the remote peer
+            if supports_fast {
+                for &fast_piece in &fast_list {
+                    PeerMessage::AllowedFast(fast_piece)
+                        .write(&mut tcp_stream)
+                        .await?;
+                }
             }
 
             // Unchoke the remote peer immediately per BEP 0003 so they can request data from us
@@ -250,11 +333,14 @@ impl PeerWorker {
                         }
                     }
                     Ok(completed_piece) = have_rx.recv() => {
-                        if tokio::time::timeout(
-                            Duration::from_secs(15),
-                            PeerMessage::Have(completed_piece).write(&mut write_half),
-                        ).await.map_or(true, |r| r.is_err()) {
-                            break;
+                        // BEP 0006: Never send Have messages after HaveAll has been sent
+                        if !sent_have_all {
+                            if tokio::time::timeout(
+                                Duration::from_secs(15),
+                                PeerMessage::Have(completed_piece).write(&mut write_half),
+                            ).await.map_or(true, |r| r.is_err()) {
+                                break;
+                            }
                         }
                     }
                     msg_opt = out_rx.recv() => {
@@ -359,9 +445,8 @@ impl PeerWorker {
                 }
             }
 
-            // 2. If unchoked and idle, check if a missing piece is available to download.
-            // This wakes up idle seeders whenever another worker releases a stalled/choked piece.
-            if !self.peer_state.peer_choking && self.current_piece.is_none() {
+            // 2. If unchoked (or choked with BEP 0006 AllowedFast pieces) and idle, check if a missing piece is available.
+            if self.can_download() && self.current_piece.is_none() {
                 self.try_start_downloading(out_tx).await?;
             }
 
@@ -375,7 +460,7 @@ impl PeerWorker {
                 PIECE_STALL_TIMEOUT
                     .saturating_sub(elapsed)
                     .max(Duration::from_millis(200))
-            } else if !self.peer_state.peer_choking {
+            } else if self.can_download() {
                 IDLE_UNCHOKED_POLL_INTERVAL
             } else {
                 IDLE_CHOKED_WAIT_INTERVAL
@@ -427,17 +512,25 @@ impl PeerWorker {
                     PeerConnectionState::Choked,
                 );
 
-                // release the in-progress piece so another worker can claim it
+                // BEP 0006: Choke does NOT interrupt Allowed Fast pieces.
+                // Only release the in-progress piece if it cannot be requested while choked.
                 if let Some(piece_idx) = self.current_piece {
-                    self.set_current_piece(None);
-                    self.last_block_time = None;
-                    self.piece_allocator
-                        .lock()
-                        .await
-                        .release_piece(piece_idx as usize);
-                    self.piece_assembler.clear_piece(piece_idx);
-                    self.pending_requests = 0;
-                    self.requested_offset = 0;
+                    if !self.can_request_piece(piece_idx) {
+                        self.set_current_piece(None);
+                        self.last_block_time = None;
+                        self.piece_allocator
+                            .lock()
+                            .await
+                            .release_piece(piece_idx as usize);
+                        self.piece_assembler.clear_piece(piece_idx);
+                        self.pending_requests = 0;
+                        self.requested_offset = 0;
+
+                        // If we have AllowedFast pieces available, transition immediately
+                        if self.can_download() {
+                            self.try_start_downloading(out_tx).await?;
+                        }
+                    }
                 }
             }
             PeerMessage::Unchoke => {
@@ -448,7 +541,9 @@ impl PeerWorker {
                     self.port,
                     PeerConnectionState::Connected,
                 );
-                self.try_start_downloading(out_tx).await?;
+                if self.current_piece.is_none() {
+                    self.try_start_downloading(out_tx).await?;
+                }
             }
             PeerMessage::Interested => {
                 self.peer_state.peer_interested = true;
@@ -457,6 +552,15 @@ impl PeerWorker {
                 self.peer_state.peer_interested = false;
             }
             PeerMessage::Have(index) => {
+                // BEP 0006: Receiving Have after HaveAll is a protocol violation -> close connection
+                if self.supports_fast && self.peer_state.peer_has_all {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent Have({}) after HaveAll (BEP 0006 violation)",
+                        self.ip_addr, self.port, index
+                    )));
+                }
+                self.peer_state.received_bitfield_state = true;
+
                 // Guard against out-of-bounds piece index (prevents memory bomb via bitfield.resize)
                 if (index as usize) >= self.total_pieces {
                     warn!(
@@ -516,13 +620,32 @@ impl PeerWorker {
                     }
                 }
 
-                // If unchoked and idle, start downloading
-                if !self.peer_state.peer_choking && self.current_piece.is_none() {
+                // If unchoked (or allowed-fast) and idle, start downloading
+                if self.can_download() && self.current_piece.is_none() {
                     self.try_start_downloading(out_tx).await?;
                 }
             }
             PeerMessage::Bitfield(mut bitfield) => {
                 let expected_bytes = (self.total_pieces + 7) / 8;
+                if self.supports_fast {
+                    if self.peer_state.received_bitfield_state {
+                        return Err(EngineError::Error(format!(
+                            "Peer {}:{} sent duplicate Bitfield/availability message (BEP 0006 violation)",
+                            self.ip_addr, self.port
+                        )));
+                    }
+                    if bitfield.len() != expected_bytes {
+                        return Err(EngineError::Error(format!(
+                            "Peer {}:{} sent invalid Bitfield length {} (expected {})",
+                            self.ip_addr,
+                            self.port,
+                            bitfield.len(),
+                            expected_bytes
+                        )));
+                    }
+                }
+                self.peer_state.received_bitfield_state = true;
+
                 if bitfield.len() > expected_bytes {
                     bitfield.truncate(expected_bytes);
                     bitfield.shrink_to_fit();
@@ -566,8 +689,164 @@ impl PeerWorker {
                     let _ = out_tx.send(PeerMessage::Interested).await;
                 }
 
-                if !self.peer_state.peer_choking && self.current_piece.is_none() {
+                if self.can_download() && self.current_piece.is_none() {
                     self.try_start_downloading(out_tx).await?;
+                }
+            }
+
+            PeerMessage::HaveAll => {
+                if !self.supports_fast {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent HaveAll without Fast Extension negotiated",
+                        self.ip_addr, self.port
+                    )));
+                }
+                if self.peer_state.received_bitfield_state {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent duplicate HaveAll/Bitfield message",
+                        self.ip_addr, self.port
+                    )));
+                }
+                self.peer_state.received_bitfield_state = true;
+                self.peer_state.peer_has_all = true;
+
+                let bitfield = PieceAllocator::build_full_bitfield(self.total_pieces);
+                {
+                    let mut piece_allocator = self.piece_allocator.lock().await;
+                    piece_allocator.register_bitfield(&bitfield, self.total_pieces);
+                }
+                self.peer_state.bitfield = bitfield;
+
+                self.stats_registry.update_peer_progress(
+                    &info_hash_sha1,
+                    self.ip_addr,
+                    self.port,
+                    100.0,
+                );
+
+                let has_incomplete = {
+                    let alloc = self.piece_allocator.lock().await;
+                    if alloc.all_complete() {
+                        info!(
+                            "Worker {}:{} is also a seeder (HaveAll) — disconnecting to free connection slot",
+                            self.ip_addr, self.port
+                        );
+                        return Ok(());
+                    }
+                    alloc.has_incomplete_pieces()
+                };
+
+                if has_incomplete && !self.peer_state.am_interested {
+                    self.peer_state.am_interested = true;
+                    let _ = out_tx.send(PeerMessage::Interested).await;
+                }
+
+                if self.can_download() && self.current_piece.is_none() {
+                    self.try_start_downloading(out_tx).await?;
+                }
+            }
+
+            PeerMessage::HaveNone => {
+                if !self.supports_fast {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent HaveNone without Fast Extension negotiated",
+                        self.ip_addr, self.port
+                    )));
+                }
+                if self.peer_state.received_bitfield_state {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent duplicate HaveNone/Bitfield message",
+                        self.ip_addr, self.port
+                    )));
+                }
+                self.peer_state.received_bitfield_state = true;
+                self.peer_state.bitfield = vec![0u8; (self.total_pieces + 7) / 8];
+                self.stats_registry.update_peer_progress(
+                    &info_hash_sha1,
+                    self.ip_addr,
+                    self.port,
+                    0.0,
+                );
+            }
+
+            PeerMessage::SuggestPiece(index) => {
+                if !self.supports_fast {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent SuggestPiece without Fast Extension negotiated",
+                        self.ip_addr, self.port
+                    )));
+                }
+                if (index as usize) >= self.total_pieces {
+                    warn!(
+                        "Peer {}:{} sent out-of-range SuggestPiece({}) (total_pieces={}) — ignoring",
+                        self.ip_addr, self.port, index, self.total_pieces
+                    );
+                    return Ok(());
+                }
+                if !self.peer_suggested.contains(&index) {
+                    if self.peer_suggested.len() >= MAX_SUGGESTED_PIECES {
+                        self.peer_suggested.pop_front();
+                    }
+                    self.peer_suggested.push_back(index);
+                }
+                if self.can_download() && self.current_piece.is_none() {
+                    self.try_start_downloading(out_tx).await?;
+                }
+            }
+
+            PeerMessage::AllowedFast(index) => {
+                if !self.supports_fast {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent AllowedFast without Fast Extension negotiated",
+                        self.ip_addr, self.port
+                    )));
+                }
+                if (index as usize) >= self.total_pieces {
+                    warn!(
+                        "Peer {}:{} sent out-of-range AllowedFast({}) (total_pieces={}) — ignoring",
+                        self.ip_addr, self.port, index, self.total_pieces
+                    );
+                    return Ok(());
+                }
+                self.peer_allowed_fast.insert(index);
+                if self.current_piece.is_none() {
+                    self.try_start_downloading(out_tx).await?;
+                }
+            }
+
+            PeerMessage::RejectRequest {
+                index,
+                begin,
+                length,
+            } => {
+                if !self.supports_fast {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent RejectRequest without Fast Extension negotiated",
+                        self.ip_addr, self.port
+                    )));
+                }
+                if !self.consume_sent_request(index, begin, length) {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent RejectRequest for unrequested block ({}, {}, {})",
+                        self.ip_addr, self.port, index, begin, length
+                    )));
+                }
+
+                if self.current_piece == Some(index) {
+                    self.set_current_piece(None);
+                    self.last_block_time = None;
+                    self.pending_requests = 0;
+                    self.requested_offset = 0;
+                    self.piece_assembler.clear_piece(index);
+                    self.piece_allocator
+                        .lock()
+                        .await
+                        .release_piece(index as usize);
+                    self.rejected_pieces.insert(index, Instant::now());
+
+                    if self.can_download() {
+                        self.try_start_downloading(out_tx).await?;
+                    }
                 }
             }
 
@@ -576,6 +855,19 @@ impl PeerWorker {
                 begin,
                 block,
             } => {
+                // BEP 0006: Receiving a Piece that was never requested MUST close the connection
+                let was_requested = self.consume_sent_request(index, begin, block.len() as u32);
+                if self.supports_fast && !was_requested {
+                    return Err(EngineError::Error(format!(
+                        "Peer {}:{} sent unrequested Piece block ({}, {}, {}) (BEP 0006 violation)",
+                        self.ip_addr,
+                        self.port,
+                        index,
+                        begin,
+                        block.len()
+                    )));
+                }
+
                 // Only accept blocks for the currently assigned piece within valid torrent bounds
                 if self.current_piece != Some(index) || (index as usize) >= self.total_pieces {
                     return Ok(());
@@ -721,7 +1013,7 @@ impl PeerWorker {
                 } else {
                     // piece incomplete — keep pipeline full
                     if let Some(piece_idx) = self.current_piece {
-                        if !self.peer_state.peer_choking {
+                        if self.can_request_piece(piece_idx) {
                             self.fill_pipeline(piece_idx, out_tx).await?;
                         }
                     }
@@ -733,19 +1025,51 @@ impl PeerWorker {
                 begin,
                 length,
             } => {
-                // Reject zero-length or oversized block requests (> 128 KB per BEP 0003)
-                if length == 0 || length > 128 * 1024 {
+                // Reject zero-length, oversized (> 128 KB per BEP 0003), or out-of-bounds piece requests
+                if length == 0 || length > 128 * 1024 || (index as usize) >= self.total_pieces {
+                    if self.supports_fast {
+                        let _ = out_tx
+                            .send(PeerMessage::RejectRequest {
+                                index,
+                                begin,
+                                length,
+                            })
+                            .await;
+                    }
                     return Ok(());
                 }
 
-                // If we have completed this piece and are not choking the peer, serve only the requested block
+                // BEP 0006: Serve requests if unchoked OR if the piece is in our Allowed Fast set for this peer
+                let may_serve = !self.peer_state.am_choking
+                    || (self.supports_fast && self.am_allowed_fast.contains(&index));
+
+                if !may_serve {
+                    if self.supports_fast {
+                        self.choked_rejected_count = self.choked_rejected_count.saturating_add(1);
+                        if self.choked_rejected_count > MAX_CHOKED_REJECTED_REQUESTS {
+                            return Err(EngineError::Error(format!(
+                                "Peer {}:{} sent excessive requests ({}) while choked",
+                                self.ip_addr, self.port, self.choked_rejected_count
+                            )));
+                        }
+                        let _ = out_tx
+                            .send(PeerMessage::RejectRequest {
+                                index,
+                                begin,
+                                length,
+                            })
+                            .await;
+                    }
+                    return Ok(());
+                }
+
                 let is_complete = {
                     let allocator = self.piece_allocator.lock().await;
                     (index as usize) < allocator.pieces.len()
                         && matches!(allocator.pieces[index as usize], PieceStatus::Complete)
                 };
 
-                if is_complete && !self.peer_state.am_choking {
+                if is_complete {
                     let block_opt = {
                         let map = self.file_map.read().await;
                         PieceIO::read_block_from_disk(
@@ -776,7 +1100,23 @@ impl PeerWorker {
                                 block_len,
                             );
                         }
+                    } else if self.supports_fast {
+                        let _ = out_tx
+                            .send(PeerMessage::RejectRequest {
+                                index,
+                                begin,
+                                length,
+                            })
+                            .await;
                     }
+                } else if self.supports_fast {
+                    let _ = out_tx
+                        .send(PeerMessage::RejectRequest {
+                            index,
+                            begin,
+                            length,
+                        })
+                        .await;
                 }
             }
 
@@ -908,7 +1248,7 @@ impl PeerWorker {
         &mut self,
         out_tx: &mpsc::Sender<PeerMessage>,
     ) -> Result<(), EngineError> {
-        if self.peer_state.peer_choking || self.current_piece.is_some() {
+        if !self.can_download() || self.current_piece.is_some() {
             return Ok(());
         }
 
@@ -919,13 +1259,63 @@ impl PeerWorker {
                 exclude_pieces.insert(piece_idx as usize);
             }
         }
+        self.rejected_pieces
+            .retain(|_, ts| ts.elapsed() < REJECTED_PIECE_COOLDOWN);
+        for &piece_idx in self.rejected_pieces.keys() {
+            exclude_pieces.insert(piece_idx as usize);
+        }
 
-        let piece_idx = self.piece_allocator.lock().await.allocate_piece_excluding(
-            &self.peer_state.bitfield,
-            &self.ip_addr,
-            self.total_pieces,
-            &exclude_pieces,
-        );
+        let piece_idx = {
+            let mut alloc = self.piece_allocator.lock().await;
+            let mut picked: Option<usize> = None;
+
+            // BEP 0006: Prefer suggested pieces from this peer (when not in strict sequential mode)
+            if !alloc.sequential && !self.peer_suggested.is_empty() {
+                self.peer_suggested.retain(|&s| {
+                    let idx = s as usize;
+                    idx < alloc.pieces.len() && !matches!(alloc.pieces[idx], PieceStatus::Complete)
+                });
+                for &s in &self.peer_suggested {
+                    let idx = s as usize;
+                    if exclude_pieces.contains(&idx) || !self.can_request_piece(s) {
+                        continue;
+                    }
+                    if alloc.try_allocate_specific(
+                        idx,
+                        &self.peer_state.bitfield,
+                        &self.ip_addr,
+                        self.total_pieces,
+                    ) {
+                        picked = Some(idx);
+                        break;
+                    }
+                }
+                if let Some(chosen) = picked {
+                    self.peer_suggested.retain(|&s| s as usize != chosen);
+                }
+            }
+
+            if picked.is_none() {
+                if !self.peer_state.peer_choking {
+                    picked = alloc.allocate_piece_excluding(
+                        &self.peer_state.bitfield,
+                        &self.ip_addr,
+                        self.total_pieces,
+                        &exclude_pieces,
+                    );
+                } else if self.supports_fast && !self.peer_allowed_fast.is_empty() {
+                    picked = alloc.allocate_from_allowed(
+                        &self.peer_state.bitfield,
+                        &self.ip_addr,
+                        self.total_pieces,
+                        &self.peer_allowed_fast,
+                        &exclude_pieces,
+                    );
+                }
+            }
+
+            picked
+        };
 
         if let Some(piece_idx) = piece_idx {
             self.set_current_piece(Some(piece_idx as u32));
@@ -955,11 +1345,12 @@ impl PeerWorker {
 
         while self.pending_requests < max_pending && self.requested_offset < actual_len {
             let this_block_len = block_size.min(actual_len - self.requested_offset);
+            let begin = self.requested_offset;
 
             if out_tx
                 .send(PeerMessage::Request {
                     index: piece_idx,
-                    begin: self.requested_offset,
+                    begin,
                     length: this_block_len,
                 })
                 .await
@@ -968,6 +1359,7 @@ impl PeerWorker {
                 break;
             }
 
+            self.record_sent_request(piece_idx, begin, this_block_len);
             self.requested_offset += this_block_len;
             self.pending_requests += 1;
         }
@@ -1032,5 +1424,237 @@ mod tests {
             PeerWorker::calculate_piece_backoff(10),
             Duration::from_secs(300)
         ); // capped
+    }
+
+    fn make_test_worker(supports_fast: bool, total_pieces: usize) -> PeerWorker {
+        let (have_tx, have_rx) = broadcast::channel(16);
+        let (peer_tx, _peer_rx) = mpsc::channel(16);
+        let state = TorrentState {
+            info_hash_v1: "aa".repeat(20),
+            version: 1,
+            added_time: 0,
+            total_downloaded: 0,
+            total_uploaded: 0,
+            paused: 0,
+            sequential: 0,
+            pieces: vec![0u8; (total_pieces + 7) / 8],
+            trackers: Vec::new(),
+        };
+        PeerWorker {
+            ip_addr: IpAddr::V4(Ipv4Addr::new(80, 4, 4, 200)),
+            port: 6881,
+            info_hash: [0xAA; 20],
+            peer_id: [0x11; 20],
+            peer_state: PeerState {
+                am_choking: false,
+                am_interested: false,
+                peer_choking: true,
+                peer_interested: false,
+                bitfield: vec![0u8; (total_pieces + 7) / 8],
+                received_bitfield_state: false,
+                peer_has_all: false,
+            },
+            total_pieces,
+            piece_allocator: Arc::new(Mutex::new(PieceAllocator::new(total_pieces))),
+            piece_assembler: PieceAssembler::new(),
+            total_torrent_size: (total_pieces as u64) * 16_384,
+            piece_length: 16_384,
+            piece_hashes: Arc::new(vec![0u8; total_pieces * 20]),
+            file_map: Arc::new(RwLock::new(Vec::new())),
+            torrent_state: Arc::new(Mutex::new(state)),
+            pending_requests: 0,
+            current_piece: None,
+            requested_offset: 0,
+            stats_registry: Arc::new(StatsRegistry::new()),
+            have_tx,
+            have_rx,
+            supports_extensions: false,
+            supports_dht: false,
+            supports_fast,
+            dht_handle: None,
+            is_private: false,
+            remote_ut_pex_id: None,
+            connected_peers: Arc::new(Mutex::new(HashSet::new())),
+            peer_tx,
+            last_sent_pex_peers: HashSet::new(),
+            active_piece_guard: Arc::new(AtomicU32::new(u32::MAX)),
+            last_block_time: None,
+            failed_pieces: HashMap::new(),
+            banned_peers: Arc::new(Mutex::new(HashSet::new())),
+            peer_failed_pieces: Arc::new(Mutex::new(HashMap::new())),
+            am_allowed_fast: HashSet::new(),
+            peer_allowed_fast: HashSet::new(),
+            peer_suggested: VecDeque::new(),
+            sent_requests: HashMap::new(),
+            rejected_pieces: HashMap::new(),
+            choked_rejected_count: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bep0006_have_all_allowed_fast_while_choked_and_reject() {
+        let mut worker = make_test_worker(true, 10);
+        let (out_tx, mut out_rx) = mpsc::channel(64);
+        let ih_hex = "aa".repeat(20);
+
+        // 1. Peer sends HaveAll while choking us -> sends Interested, still choked so no Request yet
+        worker
+            .handle_message(PeerMessage::HaveAll, &out_tx, &ih_hex)
+            .await
+            .unwrap();
+        assert!(worker.peer_state.peer_has_all);
+        assert!(worker.peer_state.am_interested);
+        assert_eq!(out_rx.try_recv().unwrap(), PeerMessage::Interested);
+        assert!(worker.current_piece.is_none());
+
+        // 2. Peer sends AllowedFast(4) -> even though peer_choking == true, we immediately request piece 4!
+        worker
+            .handle_message(PeerMessage::AllowedFast(4), &out_tx, &ih_hex)
+            .await
+            .unwrap();
+        assert_eq!(worker.current_piece, Some(4));
+        assert_eq!(
+            out_rx.try_recv().unwrap(),
+            PeerMessage::Request {
+                index: 4,
+                begin: 0,
+                length: 16_384,
+            }
+        );
+
+        // 3. Receiving Choke does NOT interrupt AllowedFast piece 4!
+        worker
+            .handle_message(PeerMessage::Choke, &out_tx, &ih_hex)
+            .await
+            .unwrap();
+        assert_eq!(worker.current_piece, Some(4));
+
+        // 4. Peer rejects our request -> releases piece 4 back to allocator cleanly
+        worker
+            .handle_message(
+                PeerMessage::RejectRequest {
+                    index: 4,
+                    begin: 0,
+                    length: 16_384,
+                },
+                &out_tx,
+                &ih_hex,
+            )
+            .await
+            .unwrap();
+        assert!(worker.current_piece.is_none());
+        assert_eq!(
+            worker.piece_allocator.lock().await.pieces[4],
+            PieceStatus::Missing
+        );
+
+        // 5. Duplicate/unrequested RejectRequest MUST close connection per BEP 0006
+        assert!(
+            worker
+                .handle_message(
+                    PeerMessage::RejectRequest {
+                        index: 4,
+                        begin: 0,
+                        length: 16_384,
+                    },
+                    &out_tx,
+                    &ih_hex,
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bep0006_suggest_piece_and_protocol_violations() {
+        let mut worker = make_test_worker(true, 8);
+        let (out_tx, mut out_rx) = mpsc::channel(64);
+        let ih_hex = "aa".repeat(20);
+
+        // Peer sends HaveAll + SuggestPiece(5) + Unchoke -> prefers suggested piece 5 over rarest index 0
+        worker
+            .handle_message(PeerMessage::HaveAll, &out_tx, &ih_hex)
+            .await
+            .unwrap();
+        let _ = out_rx.try_recv(); // Interested
+        worker
+            .handle_message(PeerMessage::SuggestPiece(5), &out_tx, &ih_hex)
+            .await
+            .unwrap();
+        worker
+            .handle_message(PeerMessage::Unchoke, &out_tx, &ih_hex)
+            .await
+            .unwrap();
+        assert_eq!(worker.current_piece, Some(5));
+        assert_eq!(
+            out_rx.try_recv().unwrap(),
+            PeerMessage::Request {
+                index: 5,
+                begin: 0,
+                length: 16_384,
+            }
+        );
+
+        // Receiving Have after HaveAll MUST close connection per BEP 0006
+        assert!(
+            worker
+                .handle_message(PeerMessage::Have(2), &out_tx, &ih_hex)
+                .await
+                .is_err()
+        );
+
+        // Receiving unrequested Piece MUST close connection per BEP 0006
+        assert!(
+            worker
+                .handle_message(
+                    PeerMessage::Piece {
+                        index: 1,
+                        begin: 0,
+                        block: vec![0u8; 16_384],
+                    },
+                    &out_tx,
+                    &ih_hex,
+                )
+                .await
+                .is_err()
+        );
+
+        // Choked incoming Request for non-AllowedFast piece sends RejectRequest under BEP 0006
+        worker.peer_state.am_choking = true;
+        worker
+            .handle_message(
+                PeerMessage::Request {
+                    index: 2,
+                    begin: 0,
+                    length: 16_384,
+                },
+                &out_tx,
+                &ih_hex,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out_rx.try_recv().unwrap(),
+            PeerMessage::RejectRequest {
+                index: 2,
+                begin: 0,
+                length: 16_384,
+            }
+        );
+
+        // Receiving any BEP 0006 message when Fast Extension was NOT negotiated MUST close connection
+        let mut legacy_worker = make_test_worker(false, 8);
+        assert!(
+            legacy_worker
+                .handle_message(PeerMessage::HaveNone, &out_tx, &ih_hex)
+                .await
+                .is_err()
+        );
+        assert!(
+            legacy_worker
+                .handle_message(PeerMessage::AllowedFast(0), &out_tx, &ih_hex)
+                .await
+                .is_err()
+        );
     }
 }

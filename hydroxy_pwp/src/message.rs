@@ -2,7 +2,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::errors::PeerWireProtocolError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerMessage {
     KeepAlive,
     Choke,
@@ -32,6 +32,16 @@ pub enum PeerMessage {
     },
     // BEP 0005: DHT port message (ID = 9, length = 3)
     Port(u16),
+    // BEP 0006: Fast Extension messages
+    SuggestPiece(u32), // ID = 13 (0x0D), length = 5
+    HaveAll,           // ID = 14 (0x0E), length = 1
+    HaveNone,          // ID = 15 (0x0F), length = 1
+    RejectRequest {    // ID = 16 (0x10), length = 13
+        index: u32,
+        begin: u32,
+        length: u32,
+    },
+    AllowedFast(u32),  // ID = 17 (0x11), length = 5
 }
 
 impl PeerMessage {
@@ -242,8 +252,80 @@ impl PeerMessage {
                 Ok(PeerMessage::Port(u16::from_be_bytes(port_bytes)))
             }
 
+            13 => {
+                // BEP 0006: Suggest Piece (len=5, id=13, 4-byte piece index)
+                if payload_length != 4 {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Invalid payload length for SuggestPiece".into(),
+                    ));
+                }
+                let mut buf = [0u8; 4];
+                tcp_stream
+                    .read_exact(&mut buf)
+                    .await
+                    .map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
+                Ok(PeerMessage::SuggestPiece(u32::from_be_bytes(buf)))
+            }
+
+            14 => {
+                // BEP 0006: Have All (len=1, id=14, no payload)
+                if payload_length != 0 {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Unexpected payload for HaveAll".into(),
+                    ));
+                }
+                Ok(PeerMessage::HaveAll)
+            }
+
+            15 => {
+                // BEP 0006: Have None (len=1, id=15, no payload)
+                if payload_length != 0 {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Unexpected payload for HaveNone".into(),
+                    ));
+                }
+                Ok(PeerMessage::HaveNone)
+            }
+
+            16 => {
+                // BEP 0006: Reject Request (len=13, id=16, index + begin + length)
+                if payload_length != 12 {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Invalid payload length for RejectRequest".into(),
+                    ));
+                }
+                let mut buf = [0u8; 12];
+                tcp_stream
+                    .read_exact(&mut buf)
+                    .await
+                    .map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
+                let index = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+                let begin = u32::from_be_bytes(buf[4..8].try_into().unwrap());
+                let length = u32::from_be_bytes(buf[8..12].try_into().unwrap());
+                Ok(PeerMessage::RejectRequest {
+                    index,
+                    begin,
+                    length,
+                })
+            }
+
+            17 => {
+                // BEP 0006: Allowed Fast (len=5, id=17, 4-byte piece index)
+                if payload_length != 4 {
+                    return Err(PeerWireProtocolError::InvalidPeerMessage(
+                        "Invalid payload length for AllowedFast".into(),
+                    ));
+                }
+                let mut buf = [0u8; 4];
+                tcp_stream
+                    .read_exact(&mut buf)
+                    .await
+                    .map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
+                Ok(PeerMessage::AllowedFast(u32::from_be_bytes(buf)))
+            }
+
             _ => {
-                // Unknown or unhandled extension/DHT message (e.g., id=9 Port, BEP 6 Fast Extension).
+                // Unknown or unhandled future extension message.
                 // Consume and discard exact payload bytes so the TCP stream stays synchronized
                 // without disconnecting the peer.
                 if payload_length > 0 {
@@ -338,6 +420,35 @@ impl PeerMessage {
                 buf[5..7].copy_from_slice(&port.to_be_bytes());
                 tcp_stream.write_all(&buf).await
             }
+            PeerMessage::SuggestPiece(index) => {
+                let mut buf = [0u8; 9];
+                buf[0..4].copy_from_slice(&5u32.to_be_bytes());
+                buf[4] = 13;
+                buf[5..9].copy_from_slice(&index.to_be_bytes());
+                tcp_stream.write_all(&buf).await
+            }
+            PeerMessage::HaveAll => tcp_stream.write_all(&[0, 0, 0, 1, 14]).await,
+            PeerMessage::HaveNone => tcp_stream.write_all(&[0, 0, 0, 1, 15]).await,
+            PeerMessage::RejectRequest {
+                index,
+                begin,
+                length,
+            } => {
+                let mut buf = [0u8; 17];
+                buf[0..4].copy_from_slice(&13u32.to_be_bytes());
+                buf[4] = 16;
+                buf[5..9].copy_from_slice(&index.to_be_bytes());
+                buf[9..13].copy_from_slice(&begin.to_be_bytes());
+                buf[13..17].copy_from_slice(&length.to_be_bytes());
+                tcp_stream.write_all(&buf).await
+            }
+            PeerMessage::AllowedFast(index) => {
+                let mut buf = [0u8; 9];
+                buf[0..4].copy_from_slice(&5u32.to_be_bytes());
+                buf[4] = 17;
+                buf[5..9].copy_from_slice(&index.to_be_bytes());
+                tcp_stream.write_all(&buf).await
+            }
         };
         io_res.map_err(|e| PeerWireProtocolError::NetIOError(e.to_string()))?;
 
@@ -402,6 +513,15 @@ mod tests {
                 payload: b"d1:md6:ut_pexi1eee".to_vec(),
             },
             PeerMessage::Port(6881),
+            PeerMessage::SuggestPiece(19),
+            PeerMessage::HaveAll,
+            PeerMessage::HaveNone,
+            PeerMessage::RejectRequest {
+                index: 7,
+                begin: 32768,
+                length: 16384,
+            },
+            PeerMessage::AllowedFast(1059),
         ];
 
         for msg in messages {
@@ -409,7 +529,54 @@ mod tests {
             msg.write(&mut buf).await.unwrap();
             let mut cursor = Cursor::new(buf);
             let decoded = PeerMessage::read(&mut cursor).await.unwrap();
-            assert_eq!(format!("{:?}", msg), format!("{:?}", decoded));
+            assert_eq!(msg, decoded);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bep0006_wire_encoding_and_validation() {
+        // Verify exact BEP 0006 wire opcodes and lengths
+        let mut buf = Vec::new();
+        PeerMessage::SuggestPiece(0x01020304).write(&mut buf).await.unwrap();
+        assert_eq!(buf, vec![0, 0, 0, 5, 0x0D, 1, 2, 3, 4]);
+
+        buf.clear();
+        PeerMessage::HaveAll.write(&mut buf).await.unwrap();
+        assert_eq!(buf, vec![0, 0, 0, 1, 0x0E]);
+
+        buf.clear();
+        PeerMessage::HaveNone.write(&mut buf).await.unwrap();
+        assert_eq!(buf, vec![0, 0, 0, 1, 0x0F]);
+
+        buf.clear();
+        PeerMessage::RejectRequest {
+            index: 1,
+            begin: 2,
+            length: 3,
+        }
+        .write(&mut buf)
+        .await
+        .unwrap();
+        assert_eq!(
+            buf,
+            vec![0, 0, 0, 13, 0x10, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]
+        );
+
+        buf.clear();
+        PeerMessage::AllowedFast(1059).write(&mut buf).await.unwrap();
+        assert_eq!(buf, vec![0, 0, 0, 5, 0x11, 0, 0, 0x04, 0x23]);
+
+        // Malformed payload lengths must be rejected
+        let malformed_cases: Vec<Vec<u8>> = vec![
+            vec![0, 0, 0, 3, 0x0D, 0, 1],       // SuggestPiece with 2-byte payload
+            vec![0, 0, 0, 2, 0x0E, 0],          // HaveAll with 1-byte payload
+            vec![0, 0, 0, 2, 0x0F, 0],          // HaveNone with 1-byte payload
+            vec![0, 0, 0, 5, 0x10, 0, 0, 0, 1], // RejectRequest with 4-byte payload
+            vec![0, 0, 0, 1, 0x11],             // AllowedFast with 0-byte payload
+        ];
+        for case in malformed_cases {
+            let mut cur = Cursor::new(case);
+            assert!(PeerMessage::read(&mut cur).await.is_err());
         }
     }
 }

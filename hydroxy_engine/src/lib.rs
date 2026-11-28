@@ -11,6 +11,7 @@ use crate::stats::stats_registry::StatsRegistry;
 
 pub mod control;
 mod errors;
+pub mod fast_ext;
 pub mod log_broadcast;
 mod manager;
 pub mod peer_listener;

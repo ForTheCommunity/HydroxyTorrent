@@ -1648,6 +1648,7 @@ impl TorrentTask {
         let remote_peer_id = inbound.remote_peer_id;
         let supports_extensions = inbound.supports_extensions;
         let supports_dht = inbound.supports_dht;
+        let supports_fast = inbound.supports_fast;
         let connected_peers_clone = Arc::clone(connected_peers);
         let banned_peers_clone = Arc::clone(banned_peers);
         let peer_failed_pieces_clone = Arc::clone(peer_failed_pieces);
@@ -1664,6 +1665,8 @@ impl TorrentTask {
                     peer_choking: true,
                     peer_interested: false,
                     bitfield: vec![0u8; (total_pieces + 7) / 8],
+                    received_bitfield_state: false,
+                    peer_has_all: false,
                 },
                 total_pieces,
                 piece_allocator,
@@ -1681,6 +1684,7 @@ impl TorrentTask {
                 have_rx,
                 supports_extensions,
                 supports_dht,
+                supports_fast,
                 dht_handle,
                 is_private,
                 remote_ut_pex_id: None,
@@ -1692,6 +1696,12 @@ impl TorrentTask {
                 failed_pieces: HashMap::new(),
                 banned_peers: banned_peers_clone,
                 peer_failed_pieces: peer_failed_pieces_clone,
+                am_allowed_fast: HashSet::new(),
+                peer_allowed_fast: HashSet::new(),
+                peer_suggested: std::collections::VecDeque::new(),
+                sent_requests: HashMap::new(),
+                rejected_pieces: HashMap::new(),
+                choked_rejected_count: 0,
             };
 
             let result = worker.start_inbound(stream, remote_peer_id).await;
@@ -1773,6 +1783,8 @@ impl TorrentTask {
                     peer_choking: true,
                     peer_interested: false,
                     bitfield: vec![0u8; (total_pieces + 7) / 8],
+                    received_bitfield_state: false,
+                    peer_has_all: false,
                 },
                 total_pieces,
                 piece_allocator,
@@ -1790,6 +1802,7 @@ impl TorrentTask {
                 have_rx,
                 supports_extensions: false, // will be discovered in handshake
                 supports_dht: false,        // will be discovered in handshake
+                supports_fast: false,       // will be discovered in handshake
                 dht_handle,
                 is_private,
                 remote_ut_pex_id: None,
@@ -1801,6 +1814,12 @@ impl TorrentTask {
                 failed_pieces: HashMap::new(),
                 banned_peers: banned_peers_clone,
                 peer_failed_pieces: peer_failed_pieces_clone,
+                am_allowed_fast: HashSet::new(),
+                peer_allowed_fast: HashSet::new(),
+                peer_suggested: std::collections::VecDeque::new(),
+                sent_requests: HashMap::new(),
+                rejected_pieces: HashMap::new(),
+                choked_rejected_count: 0,
             };
 
             let result = worker.start().await;

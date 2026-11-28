@@ -16,6 +16,7 @@ pub struct InboundConnection {
     pub remote_peer_id: [u8; 20],
     pub supports_extensions: bool,
     pub supports_dht: bool,
+    pub supports_fast: bool,
 }
 
 pub struct InboundTorrentRegistration {
@@ -134,6 +135,7 @@ impl PeerListener {
                                         remote_peer_id: incoming.peer_id,
                                         supports_extensions: incoming.supports_extensions(),
                                         supports_dht: incoming.supports_dht(),
+                                        supports_fast: incoming.supports_fast(),
                                     }),
                                 )
                                 .await;

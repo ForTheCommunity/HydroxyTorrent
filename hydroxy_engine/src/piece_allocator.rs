@@ -96,6 +96,92 @@ impl PieceAllocator {
         }
     }
 
+    /// Attempt to allocate a specific missing piece (e.g. from BEP 0006 `SuggestPiece`).
+    pub fn try_allocate_specific(
+        &mut self,
+        piece_index: usize,
+        peer_bitfield: &[u8],
+        peer_ip: &IpAddr,
+        total_pieces: usize,
+    ) -> bool {
+        let limit = total_pieces.min(self.pieces.len());
+        if piece_index < limit
+            && matches!(self.pieces[piece_index], PieceStatus::Missing)
+            && Self::check_piece(peer_bitfield, piece_index)
+        {
+            self.pieces[piece_index] = PieceStatus::Downloading { peer_ip: *peer_ip };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Allocate a missing piece strictly from a peer's BEP 0006 `AllowedFast` set
+    /// so downloading can proceed while choked.
+    pub fn allocate_from_allowed(
+        &mut self,
+        peer_bitfield: &[u8],
+        peer_ip: &IpAddr,
+        total_pieces: usize,
+        allowed_pieces: &HashSet<u32>,
+        exclude_pieces: &HashSet<usize>,
+    ) -> Option<usize> {
+        let limit = total_pieces.min(self.pieces.len());
+        if self.sequential {
+            let mut sorted: Vec<usize> = allowed_pieces
+                .iter()
+                .map(|&p| p as usize)
+                .filter(|&i| i < limit)
+                .collect();
+            sorted.sort_unstable();
+            for i in sorted {
+                if exclude_pieces.contains(&i) {
+                    continue;
+                }
+                if matches!(self.pieces[i], PieceStatus::Missing)
+                    && Self::check_piece(peer_bitfield, i)
+                {
+                    self.pieces[i] = PieceStatus::Downloading { peer_ip: *peer_ip };
+                    return Some(i);
+                }
+            }
+            return None;
+        }
+
+        let mut best: Option<(usize, u32)> = None;
+        for &raw_idx in allowed_pieces {
+            let i = raw_idx as usize;
+            if i >= limit || exclude_pieces.contains(&i) {
+                continue;
+            }
+            if matches!(self.pieces[i], PieceStatus::Missing) && Self::check_piece(peer_bitfield, i)
+            {
+                let availability = self.piece_availability[i];
+                if best.is_none() || availability < best.unwrap().1 {
+                    best = Some((i, availability));
+                }
+            }
+        }
+
+        if let Some((idx, _)) = best {
+            self.pieces[idx] = PieceStatus::Downloading { peer_ip: *peer_ip };
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// Builds a properly bit-masked complete bitfield for `total_pieces` (BEP 0006 `HaveAll`),
+    /// leaving spare trailing bits in the final byte set to `0`.
+    pub fn build_full_bitfield(total_pieces: usize) -> Vec<u8> {
+        let num_bytes = (total_pieces + 7) / 8;
+        let mut bitfield = vec![0u8; num_bytes];
+        for i in 0..total_pieces {
+            bitfield[i / 8] |= 1 << (7 - (i % 8));
+        }
+        bitfield
+    }
+
     // release piece when downloading is interrupted.
     // marking piece to Missing...
     pub fn release_piece(&mut self, piece_index: usize) {
@@ -358,6 +444,35 @@ mod tests {
         assert_eq!(
             alloc.allocate_piece_excluding(&peer_bitfield, &ip, total, &excluded),
             None
+        );
+    }
+
+    #[test]
+    fn test_bep0006_build_full_bitfield_and_allowed_fast_allocation() {
+        // 10 pieces -> 2 bytes: first byte 0b1111_1111, second byte 0b1100_0000 (spare bits 0)
+        let bf = PieceAllocator::build_full_bitfield(10);
+        assert_eq!(bf, vec![0b1111_1111, 0b1100_0000]);
+        for i in 0..10 {
+            assert!(PieceAllocator::check_piece(&bf, i));
+        }
+        assert!(!PieceAllocator::check_piece(&bf, 10));
+
+        let mut alloc = PieceAllocator::new(6);
+        alloc.piece_availability = vec![10, 8, 2, 5, 1, 9];
+        let full_6 = PieceAllocator::build_full_bitfield(6);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+
+        // SuggestPiece specific allocation
+        assert!(alloc.try_allocate_specific(3, &full_6, &ip, 6));
+        assert!(!alloc.try_allocate_specific(3, &full_6, &ip, 6)); // already downloading
+        alloc.release_piece(3);
+
+        // AllowedFast allocation picks rarest piece inside allowed_pieces (pieces 1 and 2 -> piece 2 has availability 2)
+        let allowed: HashSet<u32> = [1, 2].into_iter().collect();
+        let excluded = HashSet::new();
+        assert_eq!(
+            alloc.allocate_from_allowed(&full_6, &ip, 6, &allowed, &excluded),
+            Some(2)
         );
     }
 }

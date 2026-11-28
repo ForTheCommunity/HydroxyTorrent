@@ -22,6 +22,8 @@ impl Handshake {
         reserved[5] |= 0x10;
         // BEP 05: DHT Protocol bit (last bit of the 8-byte reserved field, i.e., byte 7, bit 0x01)
         reserved[7] |= 0x01;
+        // BEP 06: Fast Extension bit (3rd least-significant bit of last reserved byte, i.e., byte 7, bit 0x04)
+        reserved[7] |= 0x04;
         Self {
             reserved,
             info_hash,
@@ -35,6 +37,10 @@ impl Handshake {
 
     pub fn supports_dht(&self) -> bool {
         (self.reserved[7] & 0x01) != 0
+    }
+
+    pub fn supports_fast(&self) -> bool {
+        (self.reserved[7] & 0x04) != 0
     }
 
     pub fn to_bytes(&self) -> [u8; 68] {
@@ -108,5 +114,39 @@ impl Handshake {
         }
 
         Ok(incomming_handshake)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_handshake_reserved_bits_and_roundtrip() {
+        let info_hash = [0xAB; 20];
+        let peer_id = [0xCD; 20];
+        let hs = Handshake::new(info_hash, peer_id);
+
+        assert!(hs.supports_extensions());
+        assert!(hs.supports_dht());
+        assert!(hs.supports_fast());
+        assert_eq!(hs.reserved[5] & 0x10, 0x10);
+        assert_eq!(hs.reserved[7] & 0x01, 0x01);
+        assert_eq!(hs.reserved[7] & 0x04, 0x04);
+
+        let wire = hs.to_bytes();
+        let decoded = Handshake::from_bytes(&wire).unwrap();
+        assert_eq!(decoded.info_hash, info_hash);
+        assert_eq!(decoded.peer_id, peer_id);
+        assert!(decoded.supports_extensions());
+        assert!(decoded.supports_dht());
+        assert!(decoded.supports_fast());
+
+        // Peer without BEP 0006 bit set
+        let mut legacy_wire = wire;
+        legacy_wire[27] &= !0x04;
+        let legacy = Handshake::from_bytes(&legacy_wire).unwrap();
+        assert!(!legacy.supports_fast());
+        assert!(legacy.supports_dht());
     }
 }
