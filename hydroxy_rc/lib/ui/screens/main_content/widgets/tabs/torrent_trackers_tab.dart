@@ -92,8 +92,14 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
   }
 
   List<TrackerStatsSnapshot> _getSortedTrackers(List<TrackerStatsSnapshot> list) {
-    if (_sortColumnIndex == null) return list;
-    final sorted = List<TrackerStatsSnapshot>.from(list);
+    final dhtTrackers = list.where((t) => t.url == '[DHT]').toList();
+    final otherTrackers = list.where((t) => t.url != '[DHT]').toList();
+
+    if (_sortColumnIndex == null) {
+      return [...dhtTrackers, ...otherTrackers];
+    }
+
+    final sorted = List<TrackerStatsSnapshot>.from(otherTrackers);
     sorted.sort((a, b) {
       final int cmp;
       switch (_sortColumnIndex) {
@@ -117,7 +123,8 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
       }
       return _isAscending ? cmp : -cmp;
     });
-    return sorted;
+
+    return [...dhtTrackers, ...sorted];
   }
 
   @override
@@ -303,18 +310,35 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
                               ),
                             );
                           },
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(tracker.url, style: urlStyle),
-                              const SizedBox(width: 6),
-                              Icon(
-                                Icons.copy_rounded,
-                                size: 12,
-                                color: colors.tableSecondaryTextColor,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (tracker.url == '[DHT]') ...[
+                                    Icon(
+                                      Icons.hub_outlined,
+                                      size: 13,
+                                      color: colors.accentPurpleColor,
+                                    ),
+                                    const SizedBox(width: 5),
+                                  ],
+                                  Text(
+                                    tracker.url,
+                                    style: tracker.url == '[DHT]'
+                                        ? TextStyle(
+                                            color: colors.accentPurpleColor,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                          )
+                                        : urlStyle,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Icon(
+                                    Icons.copy_rounded,
+                                    size: 12,
+                                    color: colors.tableSecondaryTextColor,
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
                         ),
                       ),
                       DataCell(_buildStatusBadge(context, tracker.status)),
@@ -414,11 +438,23 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (tracker.url == '[DHT]') ...[
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6, top: 1),
+                        child: Icon(
+                          Icons.hub_outlined,
+                          size: 14,
+                          color: colors.accentPurpleColor,
+                        ),
+                      ),
+                    ],
                     Expanded(
                       child: Text(
                         tracker.url,
                         style: TextStyle(
-                          color: colors.tablePrimaryTextColor,
+                          color: tracker.url == '[DHT]'
+                              ? colors.accentPurpleColor
+                              : colors.tablePrimaryTextColor,
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
@@ -462,7 +498,7 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
     final colors = context.appColors;
     final lower = status.toLowerCase();
     if (lower.contains('working') || lower.contains('ok')) return colors.accentGreenColor;
-    if (lower.contains('updating')) return colors.accentBlueColor;
+    if (lower.contains('updating') || lower.contains('searching')) return colors.accentBlueColor;
     if (lower.contains('error') || lower.contains('fail')) return colors.accentRedColor;
     if (lower.contains('not contacted')) return colors.tableSecondaryTextColor;
     return colors.accentAmberColor;
@@ -474,7 +510,7 @@ class _TorrentTrackersTabState extends State<TorrentTrackersTab> {
     final lower = status.toLowerCase();
     if (lower.contains('working') || lower.contains('ok')) {
       badgeColor = colors.accentGreenColor;
-    } else if (lower.contains('updating')) {
+    } else if (lower.contains('updating') || lower.contains('searching')) {
       badgeColor = colors.accentBlueColor;
     } else if (lower.contains('error') || lower.contains('fail')) {
       badgeColor = colors.accentRedColor;

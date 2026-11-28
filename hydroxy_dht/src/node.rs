@@ -213,6 +213,7 @@ impl DHTNode {
 
     async fn maintenance_loop(inner: Arc<DHTInner>, mut shutdown_rx: oneshot::Receiver<()>) {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
+        interval.tick().await; // skip immediate tick at t=0s since start() spawns initial bootstrap
 
         loop {
             tokio::select! {
@@ -413,21 +414,23 @@ impl DHTHandle {
             router_addrs.len()
         );
 
-        // Send initial find_node for our own ID to all bootstrap nodes
-        let mut initial_nodes = Vec::new();
+        // Send initial find_node for our own ID to all bootstrap nodes concurrently
+        let my_id = self.inner.local_id;
+        let mut boot_tasks = Vec::with_capacity(router_addrs.len());
         for addr in router_addrs {
             let h = self.clone();
-            let my_id = self.inner.local_id;
-            if let Ok(nodes) = h.find_node(addr, my_id).await {
-                initial_nodes.extend(nodes);
-            }
+            boot_tasks.push(async move { h.find_node(addr, my_id).await });
         }
 
-        // Add discovered nodes into routing table
+        let results = futures_util_join_all(boot_tasks).await;
         {
             let mut rt = self.inner.routing_table.write().await;
-            for node in &initial_nodes {
-                rt.inject_node(*node);
+            for res in results {
+                if let Ok(nodes) = res {
+                    for node in nodes {
+                        rt.inject_node(node);
+                    }
+                }
             }
         }
 

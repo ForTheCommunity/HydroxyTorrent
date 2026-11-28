@@ -116,26 +116,26 @@ impl TorrentTask {
 
         let is_private = torrent_info.is_private();
 
-        let mut tracker_stats: Vec<TrackerStats> = trackers
-            .iter()
-            .enumerate()
-            .map(|(i, url)| TrackerStats {
+        let mut tracker_stats: Vec<TrackerStats> = Vec::new();
+
+        if !is_private && self.dht_handle.is_some() {
+            tracker_stats.push(TrackerStats {
+                tier: 0,
+                url: "[DHT]".to_string(),
+                status: "Updating...".to_string(),
+                peers: 0,
+                interval: 120,
+                next_announce: 0,
+            });
+        }
+
+        for (i, url) in trackers.iter().enumerate() {
+            tracker_stats.push(TrackerStats {
                 tier: i + 1,
                 url: url.clone(),
                 status: "Not contacted yet".to_string(),
                 peers: 0,
                 interval: 0,
-                next_announce: 0,
-            })
-            .collect();
-
-        if !is_private && self.dht_handle.is_some() {
-            tracker_stats.push(TrackerStats {
-                tier: tracker_stats.len() + 1,
-                url: "[DHT]".to_string(),
-                status: "Updating...".to_string(),
-                peers: 0,
-                interval: 120,
                 next_announce: 0,
             });
         }
@@ -1829,6 +1829,15 @@ impl TorrentTask {
         info_hash_sha1: String,
     ) {
         stats_registry.update_tracker(&info_hash_sha1, "[DHT]", "Searching...", None, None, None);
+
+        // If DHT is still completing its initial bootstrap on cold start, wait up to 10s for initial nodes
+        for _ in 0..20 {
+            if dht.routing_table_size().await.0 > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
         let (raw_peer_tx, mut raw_peer_rx) = mpsc::channel::<SocketAddrV4>(128);
         let batch_peer_tx = peer_tx.clone();
 
@@ -1855,6 +1864,7 @@ impl TorrentTask {
             .announce_peer_streaming(info_hash, listen_port, false, raw_peer_tx)
             .await;
         let peer_count = bridge_handle.await.unwrap_or(0);
+        let (rt_nodes, _) = dht.routing_table_size().await;
 
         let next_announce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1862,7 +1872,7 @@ impl TorrentTask {
             .as_secs()
             + 120;
 
-        let status_msg = if announced_nodes > 0 || peer_count > 0 {
+        let status_msg = if announced_nodes > 0 || peer_count > 0 || rt_nodes > 0 {
             "Working".to_string()
         } else {
             "Working (0 nodes yet)".to_string()

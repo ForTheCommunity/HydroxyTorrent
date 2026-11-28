@@ -257,6 +257,14 @@ pub struct SystemStats {
     pub system_used_bytes: u64,
     #[serde(default)]
     pub process_rss_bytes: u64,
+    #[serde(default)]
+    pub dht_enabled: bool,
+    #[serde(default)]
+    pub dht_port: u16,
+    #[serde(default)]
+    pub dht_nodes: usize,
+    #[serde(default)]
+    pub dht_good_nodes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

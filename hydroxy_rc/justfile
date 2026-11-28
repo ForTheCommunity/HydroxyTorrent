@@ -25,7 +25,11 @@ run:
 
 # Flutter Run Linux. (Development)
 rl:
-    clear ; flutter run -d linux
+    clear;
+    # flutter is having issues with wayland compositors
+    # like Niri, Hyprland so falling back to X11 for now,
+    # remove later when flutter fixes this
+    GDK_BACKEND=x11 flutter run -d linux
 
 # Flutter Run in Chrome. (Development)
 rc:
@@ -34,7 +38,7 @@ rc:
 # Clean
 clean:
     flutter clean
-     
+
 # For Building Android Apk.
 build_android_apk:
     clear ; flutter build apk --target-platform android-arm64 --release

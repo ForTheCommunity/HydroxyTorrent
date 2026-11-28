@@ -223,36 +223,65 @@ class _MobileCategoriesDrawerState extends State<MobileCategoriesDrawer> {
                 borderRadius: BorderRadius.circular(6),
                 border: Border.all(color: colors.dividerColor, width: 0.8),
               ),
-              child: Row(
+              child: Column(
                 children: [
-                  Icon(
-                    Icons.memory_rounded,
-                    size: 14,
-                    color: colors.accentPurpleColor,
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.memory_rounded,
+                        size: 14,
+                        color: colors.accentPurpleColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Daemon: ${formatBytesDynamic(widget.systemStats!.processRssBytes.toString())}',
+                        style: TextStyle(
+                          color: colors.sidebarItemTextColor,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(
+                        Icons.pie_chart_outline_rounded,
+                        size: 14,
+                        color: colors.accentBlueColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Sys: ${(widget.systemStats!.systemMemoryUsagePercent * 100).toStringAsFixed(0)}%',
+                        style: TextStyle(
+                          color: colors.sidebarItemTextColor,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Daemon: ${formatBytesDynamic(widget.systemStats!.processRssBytes.toString())}',
-                    style: TextStyle(
-                      color: colors.sidebarItemTextColor,
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                  const Spacer(),
-                  Icon(
-                    Icons.pie_chart_outline_rounded,
-                    size: 14,
-                    color: colors.accentBlueColor,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Sys: ${(widget.systemStats!.systemMemoryUsagePercent * 100).toStringAsFixed(0)}%',
-                    style: TextStyle(
-                      color: colors.sidebarItemTextColor,
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                    ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.hub_outlined,
+                        size: 14,
+                        color: !widget.systemStats!.dhtEnabled
+                            ? colors.tableSecondaryTextColor
+                            : (widget.systemStats!.dhtNodes > 0
+                                ? colors.accentGreenColor
+                                : colors.accentAmberColor),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        widget.systemStats!.dhtEnabled
+                            ? 'DHT: ${widget.systemStats!.dhtNodes} nodes (${widget.systemStats!.dhtGoodNodes} good)'
+                            : 'DHT: Disabled',
+                        style: TextStyle(
+                          color: colors.sidebarItemTextColor,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

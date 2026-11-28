@@ -89,19 +89,37 @@ impl HydroxyEngine {
 
             match hydroxy_dht::DHTNode::start(dht_cfg).await {
                 Ok((node, handle)) => {
+                    let actual_port = handle.local_addr().map(|a| a.port()).unwrap_or(dht_port);
+                    stats_registry.set_dht_stats(true, actual_port, 0, 0);
+
+                    let dht_stats_reg = Arc::clone(&stats_registry);
+                    let dht_stats_handle = handle.clone();
                     let shutdown_notify = control_registry.shutdown_notify();
                     tokio::spawn(async move {
-                        shutdown_notify.notified().await;
-                        node.shutdown();
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(1));
+                        loop {
+                            tokio::select! {
+                                _ = shutdown_notify.notified() => {
+                                    node.shutdown();
+                                    break;
+                                }
+                                _ = interval.tick() => {
+                                    let (total, good) = dht_stats_handle.routing_table_size().await;
+                                    dht_stats_reg.set_dht_stats(true, actual_port, total, good);
+                                }
+                            }
+                        }
                     });
                     info!(
                         target: "major",
                         "DHT node started on UDP port {}",
-                        handle.local_addr().map(|a| a.port()).unwrap_or(dht_port)
+                        actual_port
                     );
                     Some(handle)
                 }
                 Err(e) => {
+                    stats_registry.set_dht_stats(false, 0, 0, 0);
                     warn!(
                         target: "major",
                         "Failed to start DHT node on UDP port {}: {}",
@@ -111,6 +129,7 @@ impl HydroxyEngine {
                 }
             }
         } else {
+            stats_registry.set_dht_stats(false, 0, 0, 0);
             info!(target: "major", "DHT trackerless peer discovery disabled by configuration");
             None
         };

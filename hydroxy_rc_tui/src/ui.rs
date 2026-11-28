@@ -643,7 +643,7 @@ fn draw_trackers_tab(
             let low = tr.status.to_ascii_lowercase();
             let col = if low.contains("working") || low.contains("ok") {
                 p.accent_green
-            } else if low.contains("updating") {
+            } else if low.contains("updating") || low.contains("searching") {
                 p.accent_blue
             } else if low.contains("error") || low.contains("fail") {
                 p.accent_red
@@ -651,12 +651,17 @@ fn draw_trackers_tab(
                 p.text_secondary
             };
 
+            let url_style = if tr.url == "[DHT]" {
+                Style::default()
+                    .fg(p.accent_purple)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text_primary)
+            };
+
             Row::new(vec![
                 Cell::from(format!("{}", tr.tier)),
-                Cell::from(Span::styled(
-                    tr.url.clone(),
-                    Style::default().fg(p.text_primary),
-                )),
+                Cell::from(Span::styled(tr.url.clone(), url_style)),
                 Cell::from(Span::styled(tr.status.clone(), Style::default().fg(col))),
                 Cell::from(format!("{}", tr.peers)),
                 Cell::from(tr.reannounce_in_string()),
@@ -870,9 +875,30 @@ fn draw_status_bar(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
     let total_down: f64 = app.all_torrents.iter().map(|t| t.download_speed).sum();
     let total_up: f64 = app.all_torrents.iter().map(|t| t.upload_speed).sum();
 
+    let (dht_label, dht_col) = if let Some(ref sys) = app.system_stats {
+        if sys.dht_enabled {
+            let color = if sys.dht_nodes > 0 {
+                p.accent_green
+            } else {
+                p.accent_amber
+            };
+            (
+                format!(
+                    "DHT: {} nodes ({} good) ",
+                    sys.dht_nodes, sys.dht_good_nodes
+                ),
+                color,
+            )
+        } else {
+            ("DHT: Off ".to_string(), p.text_muted)
+        }
+    } else {
+        (String::new(), p.text_muted)
+    };
+
     let mem_str = if let Some(ref sys) = app.system_stats {
         format!(
-            " | Daemon RAM: {} | Sys RAM: {} / {} ",
+            "│ Daemon RAM: {} | Sys RAM: {} / {} ",
             format_bytes(sys.process_rss_bytes),
             format_bytes(sys.system_used_bytes),
             format_bytes(sys.system_total_bytes)
@@ -895,7 +921,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
         )
     };
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!(" {} ({}) ", conn_label, app.api.base_url),
             Style::default().fg(conn_col).add_modifier(Modifier::BOLD),
@@ -913,10 +939,21 @@ fn draw_status_bar(f: &mut Frame, app: &App, p: &ThemePalette, area: Rect) {
                 .fg(p.accent_blue)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(mem_str, Style::default().fg(p.text_secondary)),
-        Span::styled("│", Style::default().fg(p.border)),
-        right_msg,
-    ]);
+    ];
+
+    if !dht_label.is_empty() {
+        spans.push(Span::styled("│ ", Style::default().fg(p.border)));
+        spans.push(Span::styled(
+            dht_label,
+            Style::default().fg(dht_col).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    spans.push(Span::styled(mem_str, Style::default().fg(p.text_secondary)));
+    spans.push(Span::styled("│", Style::default().fg(p.border)));
+    spans.push(right_msg);
+
+    let line = Line::from(spans);
 
     let bar = Paragraph::new(line).style(Style::default().bg(p.header_bg));
     f.render_widget(bar, area);

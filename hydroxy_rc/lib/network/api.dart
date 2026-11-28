@@ -354,9 +354,17 @@ Future<SystemStatsModel> getSystemStats({String? serverHostUrl}) async {
 
   final response = await client.dio.get(
     '${client.baseUrl}/api/system/stats',
-    options: Options(receiveTimeout: const Duration(seconds: 10)),
+    options: Options(
+      receiveTimeout: const Duration(seconds: 10),
+      headers: const {'Cache-Control': 'no-cache'},
+    ),
   );
-  return SystemStatsModel.fromJson(response.data as Map<String, dynamic>);
+  if (response.data is Map) {
+    return SystemStatsModel.fromJson(
+      Map<String, dynamic>.from(response.data as Map),
+    );
+  }
+  throw Exception('Invalid system stats response');
 }
 
 Future<bool> pauseTorrent({

@@ -865,9 +865,13 @@ pub struct SystemStats {
     pub system_total_bytes: u64,
     pub system_used_bytes: u64,
     pub process_rss_bytes: u64,
+    pub dht_enabled: bool,
+    pub dht_port: u16,
+    pub dht_nodes: usize,
+    pub dht_good_nodes: usize,
 }
 
-pub async fn get_system_stats() -> impl IntoResponse {
+pub async fn get_system_stats(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     let mut total_bytes = 0u64;
     let mut available_bytes = 0u64;
     let mut process_rss_bytes = 0u64;
@@ -907,11 +911,16 @@ pub async fn get_system_stats() -> impl IntoResponse {
     }
 
     let used_bytes = total_bytes.saturating_sub(available_bytes);
+    let (dht_enabled, dht_port, dht_nodes, dht_good_nodes) = state.stats.snapshot_dht();
 
     Json(SystemStats {
         system_total_bytes: total_bytes,
         system_used_bytes: used_bytes,
         process_rss_bytes,
+        dht_enabled,
+        dht_port,
+        dht_nodes,
+        dht_good_nodes,
     })
 }
 

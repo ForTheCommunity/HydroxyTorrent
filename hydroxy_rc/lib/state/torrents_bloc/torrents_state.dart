@@ -1,6 +1,6 @@
 part of 'torrents_bloc.dart';
 
-@freezed
+@Freezed(makeCollectionsUnmodifiable: false)
 class TorrentsState with _$TorrentsState {
   const factory TorrentsState.initial() = _Initial;
   const factory TorrentsState.loading() = _Loading;

@@ -283,18 +283,44 @@ class SystemStatsModel {
   final int systemTotalBytes;
   final int systemUsedBytes;
   final int processRssBytes;
+  final bool dhtEnabled;
+  final int dhtPort;
+  final int dhtNodes;
+  final int dhtGoodNodes;
 
   SystemStatsModel({
     required this.systemTotalBytes,
     required this.systemUsedBytes,
     required this.processRssBytes,
+    this.dhtEnabled = false,
+    this.dhtPort = 0,
+    this.dhtNodes = 0,
+    this.dhtGoodNodes = 0,
   });
+
+  static int _parseInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value != null) return int.tryParse(value.toString()) ?? 0;
+    return 0;
+  }
+
+  static bool _parseBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value != null) return value.toString().toLowerCase() == 'true';
+    return false;
+  }
 
   factory SystemStatsModel.fromJson(Map<String, dynamic> json) {
     return SystemStatsModel(
-      systemTotalBytes: (json['system_total_bytes'] as num?)?.toInt() ?? 0,
-      systemUsedBytes: (json['system_used_bytes'] as num?)?.toInt() ?? 0,
-      processRssBytes: (json['process_rss_bytes'] as num?)?.toInt() ?? 0,
+      systemTotalBytes: _parseInt(json['system_total_bytes']),
+      systemUsedBytes: _parseInt(json['system_used_bytes']),
+      processRssBytes: _parseInt(json['process_rss_bytes']),
+      dhtEnabled: _parseBool(json['dht_enabled']),
+      dhtPort: _parseInt(json['dht_port']),
+      dhtNodes: _parseInt(json['dht_nodes']),
+      dhtGoodNodes: _parseInt(json['dht_good_nodes']),
     );
   }
 

@@ -1,4 +1,7 @@
-use std::net::IpAddr;
+use std::{
+    net::IpAddr,
+    sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
+};
 
 use dashmap::DashMap;
 use tokio::time::Instant;
@@ -12,11 +15,31 @@ use crate::stats::stats::{
 #[derive(Default)]
 pub struct StatsRegistry {
     torrents: DashMap<String, TorrentStats>,
+    dht_enabled: AtomicBool,
+    dht_port: AtomicU16,
+    dht_nodes: AtomicUsize,
+    dht_good_nodes: AtomicUsize,
 }
 
 impl StatsRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_dht_stats(&self, enabled: bool, port: u16, total_nodes: usize, good_nodes: usize) {
+        self.dht_enabled.store(enabled, Ordering::Relaxed);
+        self.dht_port.store(port, Ordering::Relaxed);
+        self.dht_nodes.store(total_nodes, Ordering::Relaxed);
+        self.dht_good_nodes.store(good_nodes, Ordering::Relaxed);
+    }
+
+    pub fn snapshot_dht(&self) -> (bool, u16, usize, usize) {
+        (
+            self.dht_enabled.load(Ordering::Relaxed),
+            self.dht_port.load(Ordering::Relaxed),
+            self.dht_nodes.load(Ordering::Relaxed),
+            self.dht_good_nodes.load(Ordering::Relaxed),
+        )
     }
 
     // called by a Torrent Task when it starts...

@@ -56,6 +56,13 @@ class _MobileMainScreenState extends State<MobileMainScreen> {
   }
 
   @override
+  void reassemble() {
+    super.reassemble();
+    _isFetchingStats = false;
+    _fetchSystemStats();
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _statsTimer?.cancel();

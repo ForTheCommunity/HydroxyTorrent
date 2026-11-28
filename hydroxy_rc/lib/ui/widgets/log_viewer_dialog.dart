@@ -59,7 +59,7 @@ class LogViewerDialog extends StatefulWidget {
 }
 
 class _LogViewerDialogState extends State<LogViewerDialog> {
-  static const int _maxLiveMinorLines = 1000;
+  static const int _maxLiveMinorLines = 100;
 
   final ScrollController _verticalController = ScrollController();
   final ScrollController _horizontalController = ScrollController();
@@ -99,6 +99,9 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
     if (_selectedCategory == LogCategory.minor) {
       unsubscribeMinorLogs(subId: _subId);
     }
+    _minorLines.clear();
+    _majorLines.clear();
+    _rawMajorLogs = '';
     _verticalController.dispose();
     _horizontalController.dispose();
     _searchController.dispose();
@@ -132,6 +135,8 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
     });
     if (previous == LogCategory.minor) {
       unsubscribeMinorLogs(subId: _subId);
+      _minorLines.clear();
+      _nextMinorLineNumber = 1;
     }
     _startPollingForCurrentCategory();
     if (_autoScroll) {
@@ -160,9 +165,12 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
         final raw = trimmed.isEmpty ? 'No major events recorded yet.' : logs;
 
         final rawLines = raw.split('\n');
+        final cappedLines = rawLines.length > 250
+            ? rawLines.sublist(rawLines.length - 250)
+            : rawLines;
         final parsed = <_LogLine>[];
-        for (int i = 0; i < rawLines.length; i++) {
-          final line = rawLines[i];
+        for (int i = 0; i < cappedLines.length; i++) {
+          final line = cappedLines[i];
           parsed.add(
             _LogLine(
               number: i + 1,
@@ -724,29 +732,22 @@ class _LogViewerDialogState extends State<LogViewerDialog> {
                   : Scrollbar(
                       controller: _verticalController,
                       thumbVisibility: true,
-                      child: Scrollbar(
-                        controller: _horizontalController,
-                        thumbVisibility: true,
-                        notificationPredicate: (n) => n.depth == 1,
-                        child: SingleChildScrollView(
-                          controller: _verticalController,
-                          padding: const EdgeInsets.all(12),
-                          child: SingleChildScrollView(
-                            controller: _horizontalController,
-                            scrollDirection: Axis.horizontal,
+                      child: ListView.builder(
+                        controller: _verticalController,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        itemCount: filteredLines.length,
+                        itemBuilder: (context, index) {
+                          final line = filteredLines[index];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 1),
                             child: SelectableText.rich(
                               TextSpan(
-                                children: [
-                                  for (final line in filteredLines) ...[
-                                    ..._buildLineSpans(colors, line, padWidth),
-                                    const TextSpan(text: '\n'),
-                                  ],
-                                ],
+                                children: _buildLineSpans(colors, line, padWidth),
                               ),
-                              style: const TextStyle(height: 1.45),
+                              style: const TextStyle(height: 1.35),
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       ),
                     ),
             ),

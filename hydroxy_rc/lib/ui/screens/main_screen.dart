@@ -73,6 +73,13 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   @override
+  void reassemble() {
+    super.reassemble();
+    _isFetchingStats = false;
+    _fetchSystemStats();
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _statsTimer?.cancel();
@@ -268,6 +275,46 @@ class _MainScreenState extends State<MainScreen> {
                   ),
 
                   if (isOnline && _systemStats != null) ...[
+                    const SizedBox(width: 14),
+                    VerticalDivider(
+                      color: colors.statusBarBorderColor,
+                      width: 1,
+                      indent: 4,
+                      endIndent: 4,
+                    ),
+                    const SizedBox(width: 14),
+
+                    // DHT Routing Table Status (good nodes shown on hover)
+                    Tooltip(
+                      message: _systemStats!.dhtEnabled
+                          ? 'Good nodes: ${_systemStats!.dhtGoodNodes}'
+                          : 'DHT is disabled',
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.hub_outlined,
+                            size: 13,
+                            color: !_systemStats!.dhtEnabled
+                                ? colors.tableSecondaryTextColor
+                                : (_systemStats!.dhtNodes > 0
+                                    ? colors.accentGreenColor
+                                    : colors.accentAmberColor),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            _systemStats!.dhtEnabled
+                                ? 'DHT: ${_systemStats!.dhtNodes} nodes'
+                                : 'DHT: Off',
+                            style: TextStyle(
+                              color: colors.statusBarTextColor,
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     const SizedBox(width: 14),
                     VerticalDivider(
                       color: colors.statusBarBorderColor,
