@@ -196,7 +196,11 @@ pub struct PeerItem {
 
 impl PeerItem {
     pub fn endpoint(&self) -> String {
-        format!("{}:{}", self.ip_addr, self.port)
+        if self.ip_addr.contains(':') {
+            format!("[{}]:{}", self.ip_addr, self.port)
+        } else {
+            format!("{}:{}", self.ip_addr, self.port)
+        }
     }
 }
 

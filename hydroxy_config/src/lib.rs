@@ -36,8 +36,8 @@ where
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HydroxyConfig {
     pub network_config: NetworkConfig,
-    #[serde(default, alias = "Limitations", alias = "limitations")]
-    pub session_config: SessionConfig,
+    #[serde(default, alias = "Limitations")]
+    pub limitations: Limitations,
     #[serde(deserialize_with = "deserialize_storage_config")]
     pub storage_config: Vec<StorageConfig>,
     pub remote_config: RemoteConfig,
@@ -102,7 +102,7 @@ fn default_slow_torrent_inactive_timer_secs() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SessionConfig {
+pub struct Limitations {
     #[serde(default = "default_max_active_downloads")]
     pub max_active_downloads: usize,
     #[serde(default = "default_max_active_uploads")]
@@ -123,13 +123,13 @@ pub struct SessionConfig {
     pub max_total_peers: usize,
 }
 
-impl SessionConfig {
+impl Limitations {
     pub fn slow_dl_rate_threshold_bytes(&self) -> f64 {
         (self.slow_torrent_dl_rate_threshold_kbps * 1024) as f64
     }
 }
 
-impl Default for SessionConfig {
+impl Default for Limitations {
     fn default() -> Self {
         Self {
             max_active_downloads: default_max_active_downloads(),
@@ -287,18 +287,18 @@ impl HydroxyConfig {
     }
 
     /// Returns the effective max active downloads limit, respecting legacy `storage_config.max_active_downloads`
-    /// if set while prioritizing `session_config.max_active_downloads`.
+    /// if set while prioritizing `limitations.max_active_downloads`.
     pub fn effective_max_active_downloads(&self) -> usize {
         for storage in &self.storage_config {
             if let Some(storage_limit) = storage.max_active_downloads {
-                if self.session_config.max_active_downloads == default_max_active_downloads()
+                if self.limitations.max_active_downloads == default_max_active_downloads()
                     && storage_limit != default_max_active_downloads()
                 {
                     return storage_limit;
                 }
             }
         }
-        self.session_config.max_active_downloads
+        self.limitations.max_active_downloads
     }
 
     pub fn get_storage(&self, name: &str) -> Option<&StorageConfig> {
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_legacy_config_without_session_config() {
+    fn test_deserialize_legacy_config_without_limitations() {
         let toml_str = r#"
 [network_config]
 listen_address = "0.0.0.0"
@@ -390,15 +390,15 @@ password = "hashed_password"
         let config: HydroxyConfig =
             toml::from_str(toml_str).expect("Failed to deserialize legacy config");
         assert_eq!(config.effective_max_active_downloads(), 7);
-        assert_eq!(config.session_config.max_active_uploads, 5);
-        assert_eq!(config.session_config.dont_count_slow_torrents, true);
+        assert_eq!(config.limitations.max_active_uploads, 5);
+        assert_eq!(config.limitations.dont_count_slow_torrents, true);
         assert_eq!(
-            config.session_config.slow_torrent_dl_rate_threshold_kbps,
+            config.limitations.slow_torrent_dl_rate_threshold_kbps,
             10
         );
-        assert_eq!(config.session_config.slow_torrent_inactive_timer_secs, 60);
-        assert_eq!(config.session_config.max_peers_per_torrent, 50);
-        assert_eq!(config.session_config.max_total_peers, 300);
+        assert_eq!(config.limitations.slow_torrent_inactive_timer_secs, 60);
+        assert_eq!(config.limitations.max_peers_per_torrent, 50);
+        assert_eq!(config.limitations.max_total_peers, 300);
         assert_eq!(config.storage_config[0].watch_directory_max_depth, 2);
         assert_eq!(config.storage_config[0].name, "default");
     }
@@ -446,13 +446,13 @@ password = "hashed_password"
     }
 
     #[test]
-    fn test_deserialize_new_config_with_session_config() {
+    fn test_deserialize_new_config_with_limitations() {
         let toml_str = r#"
 [network_config]
 listen_address = "0.0.0.0"
 listen_port = 9999
 
-[session_config]
+[limitations]
 max_active_downloads = 25
 max_active_uploads = 10
 max_download_speed_kbps = 5000
@@ -475,12 +475,12 @@ password = "hashed_password"
 "#;
         let config: HydroxyConfig =
             toml::from_str(toml_str).expect("Failed to deserialize new config");
-        assert_eq!(config.session_config.max_active_downloads, 25);
-        assert_eq!(config.session_config.max_active_uploads, 10);
-        assert_eq!(config.session_config.max_download_speed_kbps, 5000);
-        assert_eq!(config.session_config.max_upload_speed_kbps, 1000);
-        assert_eq!(config.session_config.max_peers_per_torrent, 60);
-        assert_eq!(config.session_config.max_total_peers, 400);
+        assert_eq!(config.limitations.max_active_downloads, 25);
+        assert_eq!(config.limitations.max_active_uploads, 10);
+        assert_eq!(config.limitations.max_download_speed_kbps, 5000);
+        assert_eq!(config.limitations.max_upload_speed_kbps, 1000);
+        assert_eq!(config.limitations.max_peers_per_torrent, 60);
+        assert_eq!(config.limitations.max_total_peers, 400);
         assert_eq!(config.effective_max_active_downloads(), 25);
     }
 
@@ -508,8 +508,26 @@ password = "hashed_password"
 "#;
         let config: HydroxyConfig =
             toml::from_str(toml_str).expect("Failed to deserialize limitations config");
-        assert_eq!(config.session_config.max_active_downloads, 15);
+        assert_eq!(config.limitations.max_active_downloads, 15);
         assert_eq!(config.effective_max_active_downloads(), 15);
-        assert_eq!(config.session_config.max_active_uploads, 5);
+        assert_eq!(config.limitations.max_active_uploads, 5);
+    }
+
+    #[test]
+    fn test_embedded_default_config_parses_cleanly() {
+        let updated = auth::update_credentials_in_toml_content(
+            HydroxyConfig::default(),
+            "admin",
+            "$pbkdf2-sha256$i=100000$c2FsdA==$a2V5",
+        );
+        let cfg: HydroxyConfig =
+            toml::from_str(&updated).expect("Embedded hydroxy_config.toml must always parse");
+        assert!(cfg.network_config.listen_address.is_unspecified());
+        assert_eq!(cfg.network_config.listen_port, 9999);
+        assert!(cfg.network_config.dht_enabled);
+        assert_eq!(cfg.network_config.dht_port, 9999);
+        assert!(cfg.network_config.dht_bootstrap_routers.is_empty());
+        assert_eq!(cfg.remote_config.username, "admin");
+        assert_eq!(cfg.limitations.max_active_downloads, 15);
     }
 }

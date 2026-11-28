@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::Ipv4Addr};
+use std::{collections::BTreeMap, net::IpAddr};
 
 use hydroxy_bencode::{
     b_dict::BDict,
@@ -66,39 +66,69 @@ pub fn parse_remote_client_version(payload: &[u8]) -> Option<String> {
     None
 }
 
-/// Build a BEP 11 Peer Exchange (PEX) message payload.
-/// Compact 6-byte IPv4 addresses (4 bytes IP + 2 bytes port).
+/// Build a BEP 11 Peer Exchange (PEX) message payload supporting both:
+/// - IPv4 peers (`added` / `added.f` / `dropped` — 6 bytes per peer)
+/// - IPv6 peers (`added6` / `added6.f` / `dropped6` — 18 bytes per peer)
 pub fn build_pex_message(
-    added_peers: &[(Ipv4Addr, u16)],
-    dropped_peers: &[(Ipv4Addr, u16)],
+    added_peers: &[(IpAddr, u16)],
+    dropped_peers: &[(IpAddr, u16)],
 ) -> Vec<u8> {
     let mut root = BTreeMap::new();
 
-    let mut added_bytes = Vec::with_capacity(added_peers.len() * 6);
-    let mut added_flags = Vec::with_capacity(added_peers.len());
+    let mut added_v4 = Vec::new();
+    let mut added_v4_flags = Vec::new();
+    let mut added_v6 = Vec::new();
+    let mut added_v6_flags = Vec::new();
+
     for &(ip, port) in added_peers {
-        added_bytes.extend_from_slice(&ip.octets());
-        added_bytes.extend_from_slice(&port.to_be_bytes());
-        // 0x00 = standard connection (0x01 = encryption preferred, 0x02 = seed)
-        added_flags.push(0x00);
+        match Peer::normalize_ip(ip) {
+            IpAddr::V4(v4) => {
+                added_v4.extend_from_slice(&v4.octets());
+                added_v4.extend_from_slice(&port.to_be_bytes());
+                added_v4_flags.push(0x00);
+            }
+            IpAddr::V6(v6) => {
+                added_v6.extend_from_slice(&v6.octets());
+                added_v6.extend_from_slice(&port.to_be_bytes());
+                added_v6_flags.push(0x00);
+            }
+        }
     }
 
-    root.insert(b"added".to_vec(), BencodedValue::String(added_bytes));
-    root.insert(b"added.f".to_vec(), BencodedValue::String(added_flags));
+    root.insert(b"added".to_vec(), BencodedValue::String(added_v4));
+    root.insert(b"added.f".to_vec(), BencodedValue::String(added_v4_flags));
 
-    if !dropped_peers.is_empty() {
-        let mut dropped_bytes = Vec::with_capacity(dropped_peers.len() * 6);
-        for &(ip, port) in dropped_peers {
-            dropped_bytes.extend_from_slice(&ip.octets());
-            dropped_bytes.extend_from_slice(&port.to_be_bytes());
+    if !added_v6.is_empty() {
+        root.insert(b"added6".to_vec(), BencodedValue::String(added_v6));
+        root.insert(b"added6.f".to_vec(), BencodedValue::String(added_v6_flags));
+    }
+
+    let mut dropped_v4 = Vec::new();
+    let mut dropped_v6 = Vec::new();
+    for &(ip, port) in dropped_peers {
+        match Peer::normalize_ip(ip) {
+            IpAddr::V4(v4) => {
+                dropped_v4.extend_from_slice(&v4.octets());
+                dropped_v4.extend_from_slice(&port.to_be_bytes());
+            }
+            IpAddr::V6(v6) => {
+                dropped_v6.extend_from_slice(&v6.octets());
+                dropped_v6.extend_from_slice(&port.to_be_bytes());
+            }
         }
-        root.insert(b"dropped".to_vec(), BencodedValue::String(dropped_bytes));
+    }
+
+    if !dropped_v4.is_empty() {
+        root.insert(b"dropped".to_vec(), BencodedValue::String(dropped_v4));
+    }
+    if !dropped_v6.is_empty() {
+        root.insert(b"dropped6".to_vec(), BencodedValue::String(dropped_v6));
     }
 
     encode(&BencodedValue::Dictionary(root))
 }
 
-/// Parse newly discovered peers from an incoming BEP 11 PEX payload.
+/// Parse newly discovered IPv4 (`added`) and IPv6 (`added6`) peers from an incoming BEP 11 PEX payload.
 pub fn parse_pex_added_peers(payload: &[u8]) -> Vec<Peer> {
     let mut peers = Vec::new();
     let Ok(value) = decode(payload) else {
@@ -108,18 +138,10 @@ pub fn parse_pex_added_peers(payload: &[u8]) -> Vec<Peer> {
     if let BencodedValue::Dictionary(dict) = value {
         let bdict = BDict::new(&dict);
         if let Some(added) = bdict.get_string(b"added") {
-            for chunk in added.chunks_exact(6) {
-                let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
-                let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-
-                // Validate: reject 0.0.0.0, broadcast (255.255.255.255), loopback, and port 0
-                if !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_loopback() && port != 0 {
-                    peers.push(Peer {
-                        ipv4_addr: ip,
-                        port,
-                    });
-                }
-            }
+            peers.extend(Peer::parse_peers(&added));
+        }
+        if let Some(added6) = bdict.get_string(b"added6") {
+            peers.extend(Peer::parse_peers6(&added6));
         }
     }
 
@@ -129,6 +151,7 @@ pub fn parse_pex_added_peers(payload: &[u8]) -> Vec<Peer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_extended_handshake_roundtrip() {
@@ -138,20 +161,30 @@ mod tests {
     }
 
     #[test]
-    fn test_pex_message_roundtrip() {
+    fn test_pex_message_roundtrip_dual_stack() {
+        let v6_peer: Ipv6Addr = "2406:9cc0:200:1521::42".parse().unwrap();
         let peers = vec![
-            (Ipv4Addr::new(192, 168, 1, 100), 6881),
-            (Ipv4Addr::new(10, 0, 0, 5), 51413),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 6881),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 51413),
+            (IpAddr::V6(v6_peer), 55000),
         ];
-        let dropped = vec![(Ipv4Addr::new(172, 16, 0, 1), 8999)];
+        let dropped = vec![
+            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 8999),
+            (IpAddr::V6(v6_peer), 55001),
+        ];
 
         let pex_msg = build_pex_message(&peers, &dropped);
         let parsed = parse_pex_added_peers(&pex_msg);
 
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].ipv4_addr, Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(
+            parsed[0].ip_addr,
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100))
+        );
         assert_eq!(parsed[0].port, 6881);
-        assert_eq!(parsed[1].ipv4_addr, Ipv4Addr::new(10, 0, 0, 5));
+        assert_eq!(parsed[1].ip_addr, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)));
         assert_eq!(parsed[1].port, 51413);
+        assert_eq!(parsed[2].ip_addr, IpAddr::V6(v6_peer));
+        assert_eq!(parsed[2].port, 55000);
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::{IpAddr, Ipv4Addr},
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
@@ -109,9 +109,9 @@ pub struct PeerWorker {
     pub dht_handle: Option<DHTHandle>,
     pub is_private: bool,
     pub remote_ut_pex_id: Option<u8>,
-    pub connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+    pub connected_peers: Arc<Mutex<HashSet<(IpAddr, u16)>>>,
     pub peer_tx: mpsc::Sender<Vec<Peer>>,
-    pub last_sent_pex_peers: HashSet<(Ipv4Addr, u16)>,
+    pub last_sent_pex_peers: HashSet<(IpAddr, u16)>,
     pub active_piece_guard: Arc<AtomicU32>,
     pub last_block_time: Option<Instant>,
     pub failed_pieces: HashMap<u32, (usize, Instant)>,
@@ -230,16 +230,12 @@ impl PeerWorker {
         let dht_handle = self.dht_handle.clone();
 
         let fast_list: Vec<u32> = if supports_fast {
-            if let IpAddr::V4(ipv4) = self.ip_addr {
-                fast_ext::generate_allowed_fast_set(
-                    ipv4,
-                    &self.info_hash,
-                    self.total_pieces as u32,
-                    fast_ext::DEFAULT_ALLOWED_FAST_K,
-                )
-            } else {
-                Vec::new()
-            }
+            fast_ext::generate_allowed_fast_set_for_ip(
+                self.ip_addr,
+                &self.info_hash,
+                self.total_pieces as u32,
+                fast_ext::DEFAULT_ALLOWED_FAST_K,
+            )
         } else {
             Vec::new()
         };
@@ -1186,7 +1182,7 @@ impl PeerWorker {
         Ok(())
     }
 
-    /// Send a PEX update message to the remote peer advertising handshaked connected peers.
+    /// Send a PEX update message to the remote peer advertising handshaked connected peers (IPv4 + IPv6).
     async fn send_pex_update(
         &mut self,
         remote_pex_id: u8,
@@ -1196,18 +1192,13 @@ impl PeerWorker {
         if self.is_private {
             return;
         }
-        let current_peers: Vec<(Ipv4Addr, u16)> =
+        let current_peers: Vec<(IpAddr, u16)> =
             self.stats_registry.active_peer_endpoints(info_hash_sha1);
 
-        let my_ipv4 = match self.ip_addr {
-            IpAddr::V4(ipv4) => Some(ipv4),
-            _ => None,
-        };
-
-        let added: Vec<(Ipv4Addr, u16)> = current_peers
+        let added: Vec<(IpAddr, u16)> = current_peers
             .iter()
             .filter(|&&(ip, port)| {
-                if Some(ip) == my_ipv4 && port == self.port {
+                if ip == self.ip_addr && port == self.port {
                     return false; // Don't advertise peer to itself
                 }
                 !self.last_sent_pex_peers.contains(&(ip, port))
@@ -1216,8 +1207,8 @@ impl PeerWorker {
             .copied()
             .collect();
 
-        let current_set: HashSet<(Ipv4Addr, u16)> = current_peers.into_iter().collect();
-        let dropped: Vec<(Ipv4Addr, u16)> = self
+        let current_set: HashSet<(IpAddr, u16)> = current_peers.into_iter().collect();
+        let dropped: Vec<(IpAddr, u16)> = self
             .last_sent_pex_peers
             .iter()
             .filter(|&peer| !current_set.contains(peer))
@@ -1385,6 +1376,7 @@ impl PeerWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_calculate_piece_backoff_exponential() {

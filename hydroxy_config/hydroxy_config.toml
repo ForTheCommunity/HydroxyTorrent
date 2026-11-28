@@ -1,48 +1,85 @@
-# NOTE : There will be breaking changes in config file.
+# ==============================================================================
+# HydroxyTorrent Default Configuration
+# ==============================================================================
+# Default location on Linux: ~/.config/hydroxy_torrent/hydroxy_config.toml
+# NOTE: Configuration keys may evolve across pre-1.0 releases.
 
+
+# ------------------------------------------------------------------------------
+# 1. Peer Wire & DHT Network Settings
+# ------------------------------------------------------------------------------
 [network_config]
-# "0.0.0.0" to listen on all interfaces.
+
+# IP address for the incoming BitTorrent peer listener:
+#   - "0.0.0.0" or "::" : Dual-stack wildcard — listens on ALL interfaces for
+#                         both IPv4 and IPv6 incoming peer connections (recommended).
+#   - Specific IP       : Bind to a single interface only (e.g. "192.168.1.10"
+#                         for IPv4-only, or "2406:9cc0:..." for a single IPv6 interface).
 listen_address = "0.0.0.0"
-# assign a port number for app to listen on.
-# TCP port for listening for incoming connections
+
+# TCP port for incoming BitTorrent peer connections (forward this port on your
+# router if behind NAT for best seeding and swarm connectivity).
 listen_port = 9999
-# Enable / Disable DHT
+
+# Enable or disable BEP 0005 Distributed Hash Table (trackerless peer discovery).
+# Note: Automatically disabled per-torrent for private torrents (BEP 0027).
 dht_enabled = true
-# UDP port for dht
+
+# UDP port bound by the local DHT node.
 dht_port = 9999
 
+# Custom DHT bootstrap router endpoints ("host:port").
+# Leave empty `[]` to use the built-in public bootstrap nodes:
+#   - router.bittorrent.com:6881
+#   - dht.transmissionbt.com:6881
+#   - router.utorrent.com:6881
+#   - dht.aelitis.com:6881
+dht_bootstrap_routers = []
 
-# watch directory will reflected like this in download_directory...
-# <Watch Directory>/Ubuntu/ubuntu_24.iso.torrent => <Download Directory>/Ubuntu/ubuntu_24.iso
-# <Watch Directory>/Ubuntu/ubuntu_23.iso.torrent => <Download Directory>/Ubuntu/ubuntu_23.iso
-# <Watch Directory>/DebianOS/debian_10.iso.torrent => <Download Directory>/DebianOS/debian_10.iso
-# <Watch Directory>/DebianOS/debian_11.iso.torrent => <Download Directory>/DebianOS/debian_11.iso
-# Note : dot torrent files inside watch_directory will be ignored.
-# it should be inside some folder/category (like Ubuntu or Debian).
-# Storage Configuration
-# You can define one or more [[storage_config]] sections to store files across multiple disks.
-# Each storage location has its own watch directory, download directory, and optional temp directory.
+
+# ------------------------------------------------------------------------------
+# 2. Storage Locations & Watch Directories
+# ------------------------------------------------------------------------------
+# You can define one or more `[[storage_config]]` blocks to organize torrents
+# across multiple drives (e.g. NVMe SSD + secondary HDD).
+#
+# How Category Subfolders Work:
+#   Place `.torrent` files inside a category subfolder under `watch_directory`.
+#   The subfolder structure is mirrored automatically inside `download_directory`:
+#
+#     <watch_directory>/Ubuntu/ubuntu_24.iso.torrent  =>  <download_directory>/Ubuntu/ubuntu_24.iso
+#     <watch_directory>/DebianOS/debian_12.iso.torrent =>  <download_directory>/DebianOS/debian_12.iso
+#     <watch_directory>/Anime/S1/ep01.mkv.torrent     =>  <download_directory>/Anime/S1/ep01.mkv
+#
+#   IMPORTANT: `.torrent` files placed directly in the root of `watch_directory`
+#   (without a category subfolder) are ignored.
 
 [[storage_config]]
-# Unique name identifying this storage target (e.g. "default", "nvme", "hdd_movies")
+# Unique label for this storage target (shown in Remote Controller UI / TUI).
 name = "default"
-# App will scan Watch Directory for dot torrent files.
+
+# Directory monitored for incoming `.torrent` files (organized in category subfolders).
 watch_directory = "/home/user_1/temp/hydroxy/dottorrents"
-# Path where app will save downloaded files.
+
+# Final destination directory where completed downloads are stored.
 download_directory = "/home/user_1/temp/hydroxy/downloads"
-# Optional temporary directory for saving incomplete torrents while downloading.
-# Upon 100% download and verification, files are automatically moved to download_directory.
-# If omitted or empty, torrents download directly into download_directory.
+
+# Optional staging directory for incomplete downloads in progress.
+# Once 100% downloaded and verified, files are moved to `download_directory`.
+# If commented out or omitted, files download directly into `download_directory`.
 # temp_directory = "/home/user_1/temp/hydroxy/incomplete"
-# Reflection means when you delete dot torrent file from
-# watch directory downloaded torrent will also be deleted.
-# it is disabled by default.
+
+# Mirror deletions from watch directory:
+#   - `true`  : Deleting the `.torrent` file from `watch_directory` also deletes
+#               the downloaded data.
+#   - `false` : Deleting the `.torrent` file leaves downloaded files untouched (default).
 reflection = false
-# Maximum depth of subdirectories to scan in watch directory for categories (default 3)
-# e.g., 1 = category, 2 = category/subcategory, 3 = category/subcategory/collection
+
+# Maximum nested subfolder depth scanned inside `watch_directory` for categories (default: 3).
+# Example: 1 = Category, 2 = Category/Subcategory, 3 = Category/Subcategory/Collection.
 watch_directory_max_depth = 3
 
-# Example additional storage on a second hard drive:
+# Example second storage target on another drive:
 # [[storage_config]]
 # name = "secondary_hdd"
 # watch_directory = "/mnt/hdd2/torrents/watch"
@@ -52,44 +89,65 @@ watch_directory_max_depth = 3
 # watch_directory_max_depth = 3
 
 
-# Note : RPC must be enabled for making any remote connection
-# using web-ui, Android/Windows/Linux/MacOS Remote Controller App, etc...
+# ------------------------------------------------------------------------------
+# 3. Remote Control Server (REST API & Web UI)
+# ------------------------------------------------------------------------------
+# Required for connecting via `hydroxy_rc` (Desktop, Mobile, Web) and `hydroxy_rc_tui`.
 [remote_config]
-# enable/disable RPC. [enabled by default]
-# `true` for enable & `false` for disable.
+
+# Enable or disable the HTTP RPC / REST control server (enabled by default).
 rpc_enabled = true
-# enable/disable Web-UI.
-# `true` for enable & `false` for disable.
+
+# Serve the built-in static Web UI on the same address and port (`true` / `false`).
 web_ui_enabled = false
-# Address in which RPC listen on
-# use "127.0.0.1" to listen on Localhost only.
-# use "0.0.0.0" to listen on all interfaces.
+
+# IP address for the RPC & Web UI HTTP server:
+#   - "127.0.0.1" (or "::1") : Local machine only (most secure default).
+#   - "0.0.0.0"   (or "::")  : Accessible from other devices on your LAN / network.
 listen_address = "127.0.0.1"
-# port for RPC Server & Web-UI to listen on.
+
+# TCP port for the RPC API & Web UI server.
 listen_port = 10000
-# username
+
+# Authentication credentials:
+#   - If left empty `""` on first start, HydroxyTorrent automatically sets
+#     `username = "admin"`, generates a secure 16-character random password
+#     (printed once to the daemon startup log), and stores its PBKDF2-SHA256 hash.
+#   - To set or reset your own password, type a plain-text password here and
+#     restart the daemon — it will be automatically hashed in-place on startup.
 username = ""
-# password
 password = ""
 
 
-# Limitations: active transfers, bandwidth speed limits, peer connections
-[Limitations]
-# Maximum concurrent active downloads (0 = unlimited, default 15)
+# ------------------------------------------------------------------------------
+# 4. Transfer Queue, Bandwidth & Peer Limits
+# ------------------------------------------------------------------------------
+[limitations]
+
+# Maximum number of concurrent active downloads (`0` = unlimited, default: 15).
 max_active_downloads = 15
-# Do not count slow torrents in download limits
+
+# Exclude stalled / very slow torrents from counting toward `max_active_downloads`
+# so queued torrents can start automatically (qBittorrent-style queue rotation).
 dont_count_slow_torrents = true
-# Download rate threshold in KB/s below which a torrent is considered slow (default 10 KB/s)
+
+# Download speed threshold in KB/s below which an active torrent is treated as slow (default: 10).
 slow_torrent_dl_rate_threshold_kbps = 10
-# Inactivity timer in seconds before a low-speed torrent is classified as slow (default 60s)
+
+# Seconds a torrent must stay below the slow threshold before yielding its active slot (default: 60).
 slow_torrent_inactive_timer_secs = 60
-# Maximum concurrent active uploads / seeding torrents (0 = unlimited, default 5)
+
+# Maximum number of concurrent seeding / uploading torrents (`0` = unlimited, default: 5).
 max_active_uploads = 5
-# Global download rate limit in KB/s (0 = unlimited)
+
+# Global download bandwidth limit in KB/s (`0` = unlimited).
 max_download_speed_kbps = 0
-# Global upload rate limit in KB/s (0 = unlimited)
+
+# Global upload bandwidth limit in KB/s (`0` = unlimited).
 max_upload_speed_kbps = 0
-# Maximum peer connections per torrent swarm (default 50)
+
+# Maximum simultaneous peer connections per individual torrent swarm (default: 50).
 max_peers_per_torrent = 50
-# Maximum total peer connections across all swarms (default 300)
+
+# Maximum total peer connections across all active torrents combined (default: 300).
 max_total_peers = 300

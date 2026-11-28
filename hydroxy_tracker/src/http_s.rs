@@ -1,12 +1,52 @@
 use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
+    net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use hydroxy_bencode::decode::{BencodedValue, decode};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use crate::{Peer, Tracker, TrackerEvents, TrackerResponse, errors::TrackerError};
+
+const LOCAL_IPV6_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Detects a local Global Unicast IPv6 address (`2000::/3`, excluding documentation `2001:db8::/32`)
+/// via a zero-packet kernel routing lookup, cached for 60s for BEP 0007 `&ipv6=` announces.
+fn detect_global_ipv6() -> Option<Ipv6Addr> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Option<Ipv6Addr>)>>> = OnceLock::new();
+    let mutex = CACHE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(guard) = mutex.lock() {
+        if let Some((ts, cached)) = *guard {
+            if ts.elapsed() < LOCAL_IPV6_CACHE_TTL {
+                return cached;
+            }
+        }
+    }
+
+    let detected = (|| {
+        let sock = UdpSocket::bind("[::]:0").ok()?;
+        // Purely local kernel route selection — sends 0 network packets on the wire
+        sock.connect("[2606:4700:4700::1111]:80").ok()?;
+        if let Ok(SocketAddr::V6(local_v6)) = sock.local_addr() {
+            let ip = *local_v6.ip();
+            let segs = ip.segments();
+            let is_global_unicast = (segs[0] & 0xe000) == 0x2000;
+            let is_documentation = segs[0] == 0x2001 && segs[1] == 0x0db8;
+            if is_global_unicast && !is_documentation {
+                return Some(ip);
+            }
+        }
+        None
+    })();
+
+    if let Ok(mut guard) = mutex.lock() {
+        *guard = Some((Instant::now(), detected));
+    }
+
+    detected
+}
 
 struct HydroxyDnsResolver;
 
@@ -56,6 +96,14 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         };
         url.push_str("&event=");
         url.push_str(event_str);
+    }
+
+    // BEP 0007: Advertise our global unicast IPv6 address (if available) so dual-stack
+    // and intra-ISP IPv6 peers can discover and connect to us even over IPv4 trackers.
+    if let Some(local_v6) = detect_global_ipv6() {
+        let v6_str = local_v6.to_string();
+        url.push_str("&ipv6=");
+        url.push_str(&urlencoding::encode(&v6_str));
     }
 
     let response = shared_http_client()
@@ -120,11 +168,54 @@ pub fn convert(decoded_tracker_response: &BencodedValue) -> Result<TrackerRespon
             _ => 0,
         };
 
-        // IPV4 Peers
-        let ipv4_peers = match dict.get(&b"peers"[..]) {
-            Some(BencodedValue::String(bytes)) => Peer::parse_peers(&bytes),
-            _ => Vec::new(),
-        };
+        // IPv4 Peers (`peers` compact 6-byte string or non-compact dictionary list)
+        let mut ipv4_peers = Vec::new();
+        let mut ipv6_peers = Vec::new();
+
+        match dict.get(&b"peers"[..]) {
+            Some(BencodedValue::String(bytes)) => {
+                ipv4_peers.extend(Peer::parse_peers(bytes));
+            }
+            Some(BencodedValue::List(items)) => {
+                for item in items {
+                    if let BencodedValue::Dictionary(pdict) = item {
+                        let ip_opt = match pdict.get(&b"ip"[..]) {
+                            Some(BencodedValue::String(s)) => std::str::from_utf8(s)
+                                .ok()
+                                .and_then(|txt| txt.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>().ok()),
+                            _ => None,
+                        };
+                        let port_opt = match pdict.get(&b"port"[..]) {
+                            Some(BencodedValue::Integer(p)) if *p > 0 && *p <= 65535 => {
+                                Some(*p as u16)
+                            }
+                            _ => None,
+                        };
+                        if let (Some(raw_ip), Some(port)) = (ip_opt, port_opt) {
+                            let ip = Peer::normalize_ip(raw_ip);
+                            if Peer::is_valid_peer_ip(ip) {
+                                let peer = Peer { ip_addr: ip, port };
+                                match ip {
+                                    IpAddr::V4(_) => ipv4_peers.push(peer),
+                                    IpAddr::V6(_) => ipv6_peers.push(peer),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // BEP 0007: Compact 18-byte IPv6 Peers (`peers6`)
+        if let Some(BencodedValue::String(bytes6)) = dict.get(&b"peers6"[..]) {
+            for peer in Peer::parse_peers6(bytes6) {
+                match peer.ip_addr {
+                    IpAddr::V4(_) => ipv4_peers.push(peer),
+                    IpAddr::V6(_) => ipv6_peers.push(peer),
+                }
+            }
+        }
 
         Ok(TrackerResponse {
             complete,
@@ -133,8 +224,7 @@ pub fn convert(decoded_tracker_response: &BencodedValue) -> Result<TrackerRespon
             interval,
             min_interval,
             ipv4_peers,
-            // not implemented for IPV4 peers.
-            ipv6_peers: Vec::new(),
+            ipv6_peers,
         })
     } else {
         Err(TrackerError::TrackerResponseParseError(

@@ -863,7 +863,6 @@ dependencies = [
  "rand 0.10.3",
  "reqwest",
  "rustls-pki-types",
- "serde",
  "serde_json",
  "sha1 0.10.6",
  "thiserror",

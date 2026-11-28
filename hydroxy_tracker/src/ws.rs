@@ -1,6 +1,6 @@
 use std::{
     io,
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -281,29 +281,39 @@ fn parse_ws_response(payload: &[u8]) -> Result<TrackerResponse, TrackerError> {
             .unwrap_or(0) as usize;
 
         let mut ipv4_peers = Vec::new();
+        let mut ipv6_peers = Vec::new();
 
         if let Some(peers_arr) = json_val.get("peers").and_then(|v| v.as_array()) {
             for item in peers_arr {
                 if let Some(ip_str) = item
                     .get("ip")
                     .or_else(|| item.get("ipv4"))
+                    .or_else(|| item.get("ipv6"))
                     .or_else(|| item.get("addr"))
                     .and_then(|v| v.as_str())
                 {
                     let port = item.get("port").and_then(|v| v.as_u64()).unwrap_or(6881) as u16;
-                    if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
-                        ipv4_peers.push(Peer {
-                            ipv4_addr: ip,
-                            port,
-                        });
+                    let trimmed = ip_str.trim_matches(|c| c == '[' || c == ']');
+                    if let Ok(raw_ip) = trimmed.parse::<IpAddr>() {
+                        let ip = Peer::normalize_ip(raw_ip);
+                        if port != 0 && Peer::is_valid_peer_ip(ip) {
+                            let peer = Peer { ip_addr: ip, port };
+                            match ip {
+                                IpAddr::V4(_) => ipv4_peers.push(peer),
+                                IpAddr::V6(_) => ipv6_peers.push(peer),
+                            }
+                        }
                     }
                 } else if let Some(addr_str) = item.as_str() {
                     if let Ok(socket_addr) = addr_str.parse::<SocketAddr>() {
-                        if let SocketAddr::V4(v4) = socket_addr {
-                            ipv4_peers.push(Peer {
-                                ipv4_addr: *v4.ip(),
-                                port: v4.port(),
-                            });
+                        let ip = Peer::normalize_ip(socket_addr.ip());
+                        let port = socket_addr.port();
+                        if port != 0 && Peer::is_valid_peer_ip(ip) {
+                            let peer = Peer { ip_addr: ip, port };
+                            match ip {
+                                IpAddr::V4(_) => ipv4_peers.push(peer),
+                                IpAddr::V6(_) => ipv6_peers.push(peer),
+                            }
                         }
                     }
                 }
@@ -313,6 +323,16 @@ fn parse_ws_response(payload: &[u8]) -> Result<TrackerResponse, TrackerError> {
             ipv4_peers.extend(Peer::parse_peers(&bytes));
         }
 
+        if let Some(peers6_str) = json_val.get("peers6").and_then(|v| v.as_str()) {
+            let bytes6: Vec<u8> = peers6_str.chars().map(|c| c as u8).collect();
+            for peer in Peer::parse_peers6(&bytes6) {
+                match peer.ip_addr {
+                    IpAddr::V4(_) => ipv4_peers.push(peer),
+                    IpAddr::V6(_) => ipv6_peers.push(peer),
+                }
+            }
+        }
+
         return Ok(TrackerResponse {
             complete,
             downloaded: 0,
@@ -320,7 +340,7 @@ fn parse_ws_response(payload: &[u8]) -> Result<TrackerResponse, TrackerError> {
             interval,
             min_interval,
             ipv4_peers,
-            ipv6_peers: Vec::new(),
+            ipv6_peers,
         });
     }
 
@@ -471,8 +491,8 @@ mod tests {
         assert_eq!(resp.incomplete, 2);
         assert_eq!(resp.ipv4_peers.len(), 2);
         assert_eq!(
-            resp.ipv4_peers[0].ipv4_addr,
-            Ipv4Addr::new(192, 168, 1, 100)
+            resp.ipv4_peers[0].ip_addr,
+            IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 100))
         );
         assert_eq!(resp.ipv4_peers[0].port, 6881);
     }

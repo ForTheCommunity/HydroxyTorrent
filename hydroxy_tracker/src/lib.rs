@@ -303,30 +303,70 @@ pub enum TrackerEvents {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Peer {
-    pub ipv4_addr: Ipv4Addr,
+    pub ip_addr: IpAddr,
     pub port: u16,
 }
 
 impl Peer {
+    /// Unwraps IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) into canonical `IpAddr::V4`
+    /// so dual-stack listeners and peer pools never duplicate the same endpoint.
+    pub fn normalize_ip(ip: IpAddr) -> IpAddr {
+        match ip {
+            IpAddr::V4(v4) => IpAddr::V4(v4),
+            IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+                Some(v4) => IpAddr::V4(v4),
+                None => IpAddr::V6(v6),
+            },
+        }
+    }
+
+    /// Validates whether an IP address is a routable swarm peer address (rejecting unspecified,
+    /// loopback, broadcast, multicast, and IPv6 link-local `fe80::/10`).
+    pub fn is_valid_peer_ip(ip: IpAddr) -> bool {
+        match Self::normalize_ip(ip) {
+            IpAddr::V4(v4) => {
+                !v4.is_unspecified()
+                    && !v4.is_broadcast()
+                    && !v4.is_loopback()
+                    && !v4.is_multicast()
+            }
+            IpAddr::V6(v6) => {
+                !v6.is_unspecified()
+                    && !v6.is_loopback()
+                    && !v6.is_multicast()
+                    && (v6.segments()[0] & 0xffc0) != 0xfe80
+            }
+        }
+    }
+
+    /// Parses compact 6-byte IPv4 peer entries (BEP 0023).
     pub fn parse_peers(peers_bytes: &[u8]) -> Vec<Self> {
         peers_bytes
-            // a peer & it's port consumes 6 bytes.
-            // 4 for ipv4 address & 2 for port.
             .chunks_exact(6)
-            .filter_map(|a_6bytes_chunk| {
-                let ipv4_addr = Ipv4Addr::new(
-                    a_6bytes_chunk[0],
-                    a_6bytes_chunk[1],
-                    a_6bytes_chunk[2],
-                    a_6bytes_chunk[3],
-                );
-                let port = u16::from_be_bytes([a_6bytes_chunk[4], a_6bytes_chunk[5]]);
-                if !ipv4_addr.is_unspecified()
-                    && !ipv4_addr.is_broadcast()
-                    && !ipv4_addr.is_loopback()
-                    && port != 0
-                {
-                    Some(Peer { ipv4_addr, port })
+            .filter_map(|chunk| {
+                let ip = IpAddr::V4(Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]));
+                let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+                if port != 0 && Self::is_valid_peer_ip(ip) {
+                    Some(Peer { ip_addr: ip, port })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Parses compact 18-byte IPv6 peer entries (BEP 0007 `peers6` / BEP 0011 `added6`).
+    pub fn parse_peers6(peers6_bytes: &[u8]) -> Vec<Self> {
+        peers6_bytes
+            .chunks_exact(18)
+            .filter_map(|chunk| {
+                let mut octets = [0u8; 16];
+                octets.copy_from_slice(&chunk[0..16]);
+                let raw_v6 = Ipv6Addr::from(octets);
+                let ip = Self::normalize_ip(IpAddr::V6(raw_v6));
+                let port = u16::from_be_bytes([chunk[16], chunk[17]]);
+                if port != 0 && Self::is_valid_peer_ip(ip) {
+                    Some(Peer { ip_addr: ip, port })
                 } else {
                     None
                 }
@@ -358,7 +398,21 @@ pub struct TrackerResponse {
     pub interval: usize,
     pub min_interval: usize,
     pub ipv4_peers: Vec<Peer>,
-    pub ipv6_peers: Vec<Ipv6Addr>,
+    pub ipv6_peers: Vec<Peer>,
+}
+
+impl TrackerResponse {
+    /// Combines discovered IPv4 (`peers`) and IPv6 (`peers6`) endpoints into a single peer list.
+    pub fn all_peers(mut self) -> Vec<Peer> {
+        if self.ipv6_peers.is_empty() {
+            return self.ipv4_peers;
+        }
+        if self.ipv4_peers.is_empty() {
+            return self.ipv6_peers;
+        }
+        self.ipv4_peers.append(&mut self.ipv6_peers);
+        self.ipv4_peers
+    }
 }
 
 #[cfg(test)]
@@ -402,5 +456,64 @@ mod tests {
             parsed,
             Some(DnsParseResult::Found(Ipv4Addr::new(93, 158, 213, 92)))
         );
+    }
+
+    #[test]
+    fn test_bep0007_parse_peers6_and_http_convert() {
+        use hydroxy_bencode::decode::BencodedValue;
+        use std::collections::BTreeMap;
+
+        // Valid global IPv6: 2406:9cc0:200:1521::1 port 51413
+        let valid_v6: Ipv6Addr = "2406:9cc0:200:1521::1".parse().unwrap();
+        // Link-local IPv6 (must be rejected): fe80::1 port 6881
+        let link_local_v6: Ipv6Addr = "fe80::1".parse().unwrap();
+        // Loopback IPv6 (must be rejected): ::1 port 6881
+        let loopback_v6 = Ipv6Addr::LOCALHOST;
+        // IPv4-mapped IPv6 (must normalize to IpAddr::V4): ::ffff:203.0.113.9 port 8999
+        let mapped_v6 = Ipv4Addr::new(203, 0, 113, 9).to_ipv6_mapped();
+
+        let mut peers6_blob = Vec::new();
+        for (ip, port) in [
+            (valid_v6, 51413u16),
+            (link_local_v6, 6881),
+            (loopback_v6, 6881),
+            (mapped_v6, 8999),
+        ] {
+            peers6_blob.extend_from_slice(&ip.octets());
+            peers6_blob.extend_from_slice(&port.to_be_bytes());
+        }
+
+        let parsed = Peer::parse_peers6(&peers6_blob);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            parsed[0],
+            Peer {
+                ip_addr: IpAddr::V6(valid_v6),
+                port: 51413,
+            }
+        );
+        assert_eq!(
+            parsed[1],
+            Peer {
+                ip_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+                port: 8999,
+            }
+        );
+
+        // Verify http_s::convert merges both `peers` (IPv4) and `peers6` (IPv6)
+        let mut dict = BTreeMap::new();
+        dict.insert(b"interval".to_vec(), BencodedValue::Integer(1800));
+        dict.insert(b"complete".to_vec(), BencodedValue::Integer(5));
+        dict.insert(
+            b"peers".to_vec(),
+            BencodedValue::String(vec![80, 4, 4, 200, 0x1A, 0xE1]),
+        );
+        dict.insert(b"peers6".to_vec(), BencodedValue::String(peers6_blob));
+
+        let resp = http_s::convert(&BencodedValue::Dictionary(dict)).unwrap();
+        assert_eq!(resp.ipv4_peers.len(), 2); // 80.4.4.200 + normalized 203.0.113.9
+        assert_eq!(resp.ipv6_peers.len(), 1); // 2406:9cc0:200:1521::1
+        let combined = resp.all_peers();
+        assert_eq!(combined.len(), 3);
     }
 }

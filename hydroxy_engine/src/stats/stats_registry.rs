@@ -197,20 +197,11 @@ impl StatsRegistry {
             .collect()
     }
 
-    /// Returns IPv4 (ip, port) pairs of peers that have completed a handshake for PEX advertisement.
-    pub fn active_peer_endpoints(&self, info_hash: &str) -> Vec<(std::net::Ipv4Addr, u16)> {
+    /// Returns (IpAddr, port) pairs of peers that have completed a handshake for dual-stack PEX advertisement.
+    pub fn active_peer_endpoints(&self, info_hash: &str) -> Vec<(IpAddr, u16)> {
         self.torrents
             .get(info_hash)
-            .map(|torrent| {
-                torrent
-                    .peers_stats
-                    .keys()
-                    .filter_map(|&(ip, port)| match ip {
-                        IpAddr::V4(v4) => Some((v4, port)),
-                        IpAddr::V6(_) => None,
-                    })
-                    .collect()
-            })
+            .map(|torrent| torrent.peers_stats.keys().copied().collect())
             .unwrap_or_default()
     }
 

@@ -1,5 +1,10 @@
 use hydroxy_peer_wire_proto::handshake::Handshake;
-use std::{collections::HashMap, net::Ipv4Addr, sync::Arc};
+use hydroxy_tracker::Peer;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -11,7 +16,7 @@ const MAX_CONCURRENT_INBOUND_HANDSHAKES: usize = 64;
 
 pub struct InboundConnection {
     pub stream: TcpStream,
-    pub peer_ip: Ipv4Addr,
+    pub peer_ip: IpAddr,
     pub peer_port: u16,
     pub remote_peer_id: [u8; 20],
     pub supports_extensions: bool,
@@ -68,16 +73,57 @@ pub struct PeerListener;
 
 impl PeerListener {
     pub async fn start(
-        listen_address: std::net::IpAddr,
+        listen_address: IpAddr,
         listen_port: u16,
         registry: Arc<InboundTorrentRegistry>,
     ) -> Result<(), std::io::Error> {
-        let bind_addr = std::net::SocketAddr::new(listen_address, listen_port);
+        let handshake_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_INBOUND_HANDSHAKES));
+
+        // When configured on an unspecified wildcard (`0.0.0.0` or `::`), bind dual-stack
+        // so both IPv4 and IPv6 peers can connect inbound regardless of OS `bindv6only` setting.
+        if listen_address.is_unspecified() {
+            let v6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), listen_port);
+            let v4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), listen_port);
+
+            match TcpListener::bind(v6_addr).await {
+                Ok(v6_listener) => {
+                    info!(target: "major", "Peer inbound dual-stack listener active on {}", v6_addr);
+                    Self::spawn_accept_loop(
+                        v6_listener,
+                        Arc::clone(&registry),
+                        Arc::clone(&handshake_limiter),
+                    );
+                    // On systems with `IPV6_V6ONLY = 1`, also bind 0.0.0.0:port; on Linux (`V6ONLY = 0`),
+                    // `[::]:port` already accepts IPv4-mapped connections and this returns AddrInUse.
+                    if let Ok(v4_listener) = TcpListener::bind(v4_addr).await {
+                        info!(target: "major", "Peer inbound IPv4 listener active on {}", v4_addr);
+                        Self::spawn_accept_loop(v4_listener, registry, handshake_limiter);
+                    }
+                    return Ok(());
+                }
+                Err(_) => {
+                    let v4_listener = TcpListener::bind(v4_addr).await?;
+                    info!(target: "major", "Peer inbound IPv4 listener active on {}", v4_addr);
+                    Self::spawn_accept_loop(v4_listener, registry, handshake_limiter);
+                    return Ok(());
+                }
+            }
+        }
+
+        let bind_addr = SocketAddr::new(listen_address, listen_port);
         let listener = TcpListener::bind(bind_addr).await?;
         info!(target: "major", "Peer inbound listener active on {}", bind_addr);
+        Self::spawn_accept_loop(listener, registry, handshake_limiter);
 
+        Ok(())
+    }
+
+    fn spawn_accept_loop(
+        listener: TcpListener,
+        registry: Arc<InboundTorrentRegistry>,
+        handshake_limiter: Arc<Semaphore>,
+    ) {
         tokio::spawn(async move {
-            let handshake_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_INBOUND_HANDSHAKES));
             loop {
                 match listener.accept().await {
                     Ok((mut stream, socket_addr)) => {
@@ -88,17 +134,11 @@ impl PeerListener {
                                 continue;
                             }
                         };
-                        let peer_ip = match socket_addr.ip() {
-                            std::net::IpAddr::V4(ipv4) => ipv4,
-                            std::net::IpAddr::V6(ipv6) => {
-                                if let Some(ipv4) = ipv6.to_ipv4_mapped() {
-                                    ipv4
-                                } else {
-                                    continue;
-                                }
-                            }
-                        };
+                        let peer_ip = Peer::normalize_ip(socket_addr.ip());
                         let peer_port = socket_addr.port();
+                        if peer_port == 0 || !Peer::is_valid_peer_ip(peer_ip) {
+                            continue;
+                        }
                         let registry = Arc::clone(&registry);
 
                         tokio::spawn(async move {
@@ -148,7 +188,5 @@ impl PeerListener {
                 }
             }
         });
-
-        Ok(())
     }
 }

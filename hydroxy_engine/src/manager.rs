@@ -63,10 +63,10 @@ impl Manager {
             queue_manager
                 .update_config(
                     config.effective_max_active_downloads(),
-                    config.session_config.dont_count_slow_torrents,
-                    config.session_config.slow_dl_rate_threshold_bytes(),
+                    config.limitations.dont_count_slow_torrents,
+                    config.limitations.slow_dl_rate_threshold_bytes(),
                     std::time::Duration::from_secs(
-                        config.session_config.slow_torrent_inactive_timer_secs,
+                        config.limitations.slow_torrent_inactive_timer_secs,
                     ),
                 )
                 .await;

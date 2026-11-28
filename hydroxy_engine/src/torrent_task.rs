@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::{IpAddr, Ipv4Addr, SocketAddrV4},
+    net::{IpAddr, SocketAddrV4},
     sync::Arc,
 };
 
@@ -326,8 +326,8 @@ impl TorrentTask {
             .register(info_hash, session_peer_id, inbound_tx)
             .await;
 
-        // Track connected peers to avoid spawning duplicate workers
-        let connected_peers: Arc<Mutex<HashSet<(Ipv4Addr, u16)>>> =
+        // Track connected peers to avoid spawning duplicate workers (both IPv4 and IPv6)
+        let connected_peers: Arc<Mutex<HashSet<(IpAddr, u16)>>> =
             Arc::new(Mutex::new(HashSet::new()));
         let banned_peers: Arc<Mutex<HashSet<IpAddr>>> = Arc::new(Mutex::new(HashSet::new()));
         let peer_failed_pieces: Arc<Mutex<HashMap<IpAddr, usize>>> =
@@ -337,12 +337,12 @@ impl TorrentTask {
         let (have_tx, _) = broadcast::channel::<u32>(128);
 
         // Worker supervision via JoinSet
-        let mut worker_set: JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)> = JoinSet::new();
+        let mut worker_set: JoinSet<(IpAddr, u16, Result<(), EngineError>)> = JoinSet::new();
 
         // Queue of discovered peers waiting for an open connection slot
         let mut peer_pool: VecDeque<Peer> = VecDeque::new();
         // Cooldown map for unreachable/failed peers so PEX does not endlessly re-dial dead IPs
-        let mut failed_peers: HashMap<(Ipv4Addr, u16), std::time::Instant> = HashMap::new();
+        let mut failed_peers: HashMap<(IpAddr, u16), std::time::Instant> = HashMap::new();
 
         // Channel for announce tasks to stream newly discovered peers directly to the main loop
         let (new_peer_tx, mut new_peer_rx) = mpsc::channel::<Vec<Peer>>(64);
@@ -1250,14 +1250,17 @@ impl TorrentTask {
                             if peer_pool.len() >= MAX_PEER_POOL_SIZE {
                                 break;
                             }
-                            let key = (peer.ipv4_addr, peer.port);
-                            let peer_addr = IpAddr::from(peer.ipv4_addr);
+                            let peer_addr = Peer::normalize_ip(peer.ip_addr);
+                            let key = (peer_addr, peer.port);
                             if !connected.contains(&key)
                                 && !failed_peers.contains_key(&key)
                                 && !banned_peers.lock().await.contains(&peer_addr)
-                                && !peer_pool.iter().any(|p| p.ipv4_addr == peer.ipv4_addr && p.port == peer.port)
+                                && !peer_pool.iter().any(|p| p.ip_addr == peer_addr && p.port == peer.port)
                             {
-                                peer_pool.push_back(peer);
+                                peer_pool.push_back(Peer {
+                                    ip_addr: peer_addr,
+                                    port: peer.port,
+                                });
                             }
                         }
                     }
@@ -1540,9 +1543,11 @@ impl TorrentTask {
 
                 match tracker.announce().await {
                     Ok(tracker_response) => {
-                        let peer_count = tracker_response.ipv4_peers.len();
-                        let interval = if tracker_response.interval > 0 {
-                            tracker_response.interval as u64
+                        let raw_interval = tracker_response.interval;
+                        let all_peers = tracker_response.all_peers();
+                        let peer_count = all_peers.len();
+                        let interval = if raw_interval > 0 {
+                            raw_interval as u64
                         } else {
                             120
                         };
@@ -1566,8 +1571,8 @@ impl TorrentTask {
                             "found : {peer_count} peers from tracker -> {} (next announce in {}s)",
                             announce_url, interval
                         );
-                        if !tracker_response.ipv4_peers.is_empty() {
-                            let _ = peer_tx.send(tracker_response.ipv4_peers).await;
+                        if !all_peers.is_empty() {
+                            let _ = peer_tx.send(all_peers).await;
                         }
                     }
                     Err(e) => {
@@ -1597,8 +1602,8 @@ impl TorrentTask {
 
     // Spawn a worker for an inbound connection accepted on our peer listening port.
     async fn spawn_inbound_worker(
-        worker_set: &mut JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)>,
-        connected_peers: &Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+        worker_set: &mut JoinSet<(IpAddr, u16, Result<(), EngineError>)>,
+        connected_peers: &Arc<Mutex<HashSet<(IpAddr, u16)>>>,
         banned_peers: &Arc<Mutex<HashSet<IpAddr>>>,
         peer_failed_pieces: &Arc<Mutex<HashMap<IpAddr, usize>>>,
         inbound: InboundConnection,
@@ -1617,8 +1622,8 @@ impl TorrentTask {
         dht_handle: Option<DHTHandle>,
         is_private: bool,
     ) -> bool {
-        let key = (inbound.peer_ip, inbound.peer_port);
-        let peer_addr = IpAddr::from(inbound.peer_ip);
+        let peer_addr = Peer::normalize_ip(inbound.peer_ip);
+        let key = (peer_addr, inbound.peer_port);
         if banned_peers.lock().await.contains(&peer_addr) {
             warn!(
                 "Rejecting inbound connection from banned peer: {}",
@@ -1641,7 +1646,7 @@ impl TorrentTask {
         let file_map = Arc::clone(file_map);
         let stats_registry = Arc::clone(stats_registry);
         let piece_hashes = Arc::clone(piece_hashes);
-        let peer_ip = inbound.peer_ip;
+        let peer_ip = peer_addr;
         let peer_port = inbound.peer_port;
         let have_rx = have_tx.subscribe();
         let stream = inbound.stream;
@@ -1655,7 +1660,7 @@ impl TorrentTask {
 
         worker_set.spawn(async move {
             let worker = PeerWorker {
-                ip_addr: IpAddr::from(peer_ip),
+                ip_addr: peer_ip,
                 port: peer_port,
                 info_hash,
                 peer_id: session_peer_id,
@@ -1723,8 +1728,8 @@ impl TorrentTask {
     // Spawn a worker for a peer only if we don't already have an active
     // connection to that peer (deduplicated by ip:port) and within connection cap.
     async fn spawn_worker_if_new(
-        worker_set: &mut JoinSet<(Ipv4Addr, u16, Result<(), EngineError>)>,
-        connected_peers: &Arc<Mutex<HashSet<(Ipv4Addr, u16)>>>,
+        worker_set: &mut JoinSet<(IpAddr, u16, Result<(), EngineError>)>,
+        connected_peers: &Arc<Mutex<HashSet<(IpAddr, u16)>>>,
         banned_peers: &Arc<Mutex<HashSet<IpAddr>>>,
         peer_failed_pieces: &Arc<Mutex<HashMap<IpAddr, usize>>>,
         peer: Peer,
@@ -1743,8 +1748,8 @@ impl TorrentTask {
         dht_handle: Option<DHTHandle>,
         is_private: bool,
     ) -> SpawnPeerOutcome {
-        let key = (peer.ipv4_addr, peer.port);
-        let peer_addr = IpAddr::from(peer.ipv4_addr);
+        let peer_addr = Peer::normalize_ip(peer.ip_addr);
+        let key = (peer_addr, peer.port);
         if banned_peers.lock().await.contains(&peer_addr) {
             return SpawnPeerOutcome::Banned;
         }
@@ -1764,7 +1769,7 @@ impl TorrentTask {
         let file_map = Arc::clone(file_map);
         let stats_registry = Arc::clone(stats_registry);
         let piece_hashes = Arc::clone(piece_hashes);
-        let peer_ip = peer.ipv4_addr;
+        let peer_ip = peer_addr;
         let peer_port = peer.port;
         let have_rx = have_tx.subscribe();
         let connected_peers_clone = Arc::clone(connected_peers);
@@ -1773,7 +1778,7 @@ impl TorrentTask {
 
         worker_set.spawn(async move {
             let worker = PeerWorker {
-                ip_addr: IpAddr::from(peer.ipv4_addr),
+                ip_addr: peer_ip,
                 port: peer.port,
                 info_hash,
                 peer_id: session_peer_id,
@@ -1825,9 +1830,8 @@ impl TorrentTask {
             let result = worker.start().await;
             if let Err(ref e) = result {
                 warn!(
-                    "Peer: {}:{}, error: {}",
-                    peer.ipv4_addr,
-                    peer.port,
+                    "Peer: {}, error: {}",
+                    std::net::SocketAddr::new(peer_ip, peer_port),
                     e.to_string()
                 );
             }
@@ -1866,7 +1870,7 @@ impl TorrentTask {
             while let Some(addr) = raw_peer_rx.recv().await {
                 discovered += 1;
                 batch.push(Peer {
-                    ipv4_addr: *addr.ip(),
+                    ip_addr: IpAddr::V4(*addr.ip()),
                     port: addr.port(),
                 });
                 if batch.len() >= 8 {

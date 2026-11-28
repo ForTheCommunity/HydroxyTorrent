@@ -1,4 +1,4 @@
-use std::{net::Ipv4Addr, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use tokio::net::UdpSocket;
 
@@ -9,7 +9,7 @@ const ACTION_CONNECT: i32 = 0;
 const ACTION_ANNOUNCE: i32 = 1;
 
 pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError> {
-    // host:port
+    // host:port (supporting bracketed IPv6 literals like udp://[2001:db8::1]:6969/announce)
     let tracker_addr = tracker
         .announce_url
         .trim_start_matches("udp://")
@@ -17,18 +17,39 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         .next()
         .ok_or_else(|| TrackerError::InvalidUrl(tracker.announce_url.clone()))?;
 
-    let (host, port) = match tracker_addr.rsplit_once(':') {
-        Some((h, p)) => (
-            h,
-            p.parse::<u16>()
-                .map_err(|_| TrackerError::InvalidUrl(tracker.announce_url.clone()))?,
-        ),
-        None => (tracker_addr, 80),
+    let (host, port) = if let Some(rest) = tracker_addr.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, after)) => {
+                let p = after
+                    .strip_prefix(':')
+                    .map(|ps| {
+                        ps.parse::<u16>()
+                            .map_err(|_| TrackerError::InvalidUrl(tracker.announce_url.clone()))
+                    })
+                    .transpose()?
+                    .unwrap_or(80);
+                (h, p)
+            }
+            None => return Err(TrackerError::InvalidUrl(tracker.announce_url.clone())),
+        }
+    } else {
+        match tracker_addr.rsplit_once(':') {
+            Some((h, p)) => (
+                h,
+                p.parse::<u16>()
+                    .map_err(|_| TrackerError::InvalidUrl(tracker.announce_url.clone()))?,
+            ),
+            None => (tracker_addr, 80),
+        }
     };
 
     let resolved_addr = crate::resolve_host_port(host, port).await?;
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let bind_addr = match resolved_addr {
+        SocketAddr::V4(_) => "0.0.0.0:0",
+        SocketAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_addr).await?;
     socket.connect(resolved_addr).await?;
 
     // connecting
@@ -72,7 +93,7 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
 
     socket.send(&announce_req).await?;
 
-    let mut announce_resp = vec![0u8; 1024];
+    let mut announce_resp = vec![0u8; 2048];
     let n = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut announce_resp)).await??;
 
     // checking header is atlest 20 bytes or not
@@ -103,28 +124,20 @@ pub async fn announce(tracker: &Tracker) -> Result<TrackerResponse, TrackerError
         announce_resp[19],
     ]) as usize;
 
-    // parsing peers from response
-    // each peer is 6 Bytes (4 <IP> + 3 <Port>)
-    let mut peers = Vec::new();
+    // BEP 0015 / BEP 0007: 6 bytes per peer over IPv4, 18 bytes per peer over IPv6
     let peer_data = &announce_resp[20..n];
-    for chunk in peer_data.chunks_exact(6) {
-        let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
-        let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-        if !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_loopback() && port != 0 {
-            peers.push(Peer {
-                ipv4_addr: ip,
-                port,
-            });
-        }
-    }
+    let (ipv4_peers, ipv6_peers) = match resolved_addr {
+        SocketAddr::V4(_) => (Peer::parse_peers(peer_data), Vec::new()),
+        SocketAddr::V6(_) => (Vec::new(), Peer::parse_peers6(peer_data)),
+    };
 
     Ok(TrackerResponse {
         complete,
         downloaded: 0,
         incomplete,
         interval,
-        ipv4_peers: peers,
-        ipv6_peers: Vec::new(),
+        ipv4_peers,
+        ipv6_peers,
         min_interval: 0,
     })
 }

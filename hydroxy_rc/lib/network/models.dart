@@ -127,7 +127,8 @@ class PeerStatsSnapshot {
     );
   }
 
-  String get endpoint => '$ipAddr:$port';
+  String get endpoint =>
+      ipAddr.contains(':') ? '[$ipAddr]:$port' : '$ipAddr:$port';
 }
 
 class TrackerStatsSnapshot {
