@@ -794,6 +794,7 @@ dependencies = [
  "hydroxy_storage_io",
  "hydroxy_tracker",
  "hydroxy_utils",
+ "reqwest",
  "serde",
  "serde_json",
  "sha1 0.10.6",
@@ -801,6 +802,8 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]

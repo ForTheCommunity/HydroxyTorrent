@@ -28,6 +28,9 @@ use crate::{
         stats::{TorrentFileStats, TrackerStats},
         stats_registry::StatsRegistry,
     },
+    webseed::{
+        MAX_CONCURRENT_WEBSEEDS_PER_TORRENT, WebSeedLayout, WebSeedWorker, extract_http_webseeds,
+    },
 };
 
 const MAX_CONNECTED_PEERS_PER_TORRENT: usize = 50;
@@ -101,6 +104,8 @@ impl TorrentTask {
         let torrent_name = torrent_info.info.name.clone();
         let torrent_announce = torrent_info.announce.clone();
         let piece_hashes = Arc::new(torrent_info.info.pieces.clone());
+        let webseed_layout = Arc::new(WebSeedLayout::from_torrent_info(&torrent_info));
+        let webseed_urls = extract_http_webseeds(&torrent_info.url_list);
 
         let mut trackers = Vec::new();
         let mut seen_trackers = HashSet::new();
@@ -338,6 +343,7 @@ impl TorrentTask {
 
         // Worker supervision via JoinSet
         let mut worker_set: JoinSet<(IpAddr, u16, Result<(), EngineError>)> = JoinSet::new();
+        let mut webseed_set: JoinSet<()> = JoinSet::new();
 
         // Queue of discovered peers waiting for an open connection slot
         let mut peer_pool: VecDeque<Peer> = VecDeque::new();
@@ -354,6 +360,25 @@ impl TorrentTask {
                 alloc.remaining_bytes(piece_length, total_torrent_size),
             )
         };
+
+        // Start BEP 0019 HTTP/HTTPS WebSeed workers if url-list is present and torrent needs pieces
+        if !is_paused && !all_done && is_active_now && !webseed_urls.is_empty() {
+            Self::spawn_webseed_workers(
+                &mut webseed_set,
+                &webseed_urls,
+                &webseed_layout,
+                info_hash,
+                total_pieces,
+                piece_length,
+                total_torrent_size,
+                &piece_hashes,
+                &piece_allocator,
+                &file_map,
+                &torrent_state,
+                &self.stats_registry,
+                have_tx.clone(),
+            );
+        }
 
         // Announce to all trackers concurrently in parallel, streaming peers as each tracker responds
         if !is_paused && (all_done || is_active_now) && !trackers.is_empty() {
@@ -531,6 +556,7 @@ impl TorrentTask {
             tokio::select! {
                 Ok(_) = task_have_rx.recv() => {
                     if piece_allocator.lock().await.all_complete() {
+                        webseed_set.shutdown().await;
                         if is_in_temp {
                             if let Some(ref temp) = self.temp_dir {
                                 let src = std::path::Path::new(temp).join(&torrent_info.info.name);
@@ -659,6 +685,7 @@ impl TorrentTask {
                                                 low_speed_since = None;
                                                 is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                                                 worker_set.shutdown().await;
+                                                webseed_set.shutdown().await;
                                                 piece_allocator.lock().await.reset_in_progress();
                                                 connected_peers.lock().await.clear();
                                                 self.stats_registry.clear_peers(&info_hash_sha1);
@@ -688,6 +715,7 @@ impl TorrentTask {
                             is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                             re_announce_handle.abort();
                             worker_set.shutdown().await;
+                            webseed_set.shutdown().await;
                             piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
                             self.stats_registry.clear_peers(&info_hash_sha1);
@@ -715,6 +743,7 @@ impl TorrentTask {
                             is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
                             self.queue_manager.release_download_slot(&info_hash).await;
                             worker_set.shutdown().await;
+                            webseed_set.shutdown().await;
                             piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
                             self.stats_registry.clear_peers(&info_hash_sha1);
@@ -797,6 +826,23 @@ impl TorrentTask {
 
                             let can_run = has_download_slot || all_done;
                             if can_run {
+                                if has_download_slot && !all_done && !webseed_urls.is_empty() {
+                                    Self::spawn_webseed_workers(
+                                        &mut webseed_set,
+                                        &webseed_urls,
+                                        &webseed_layout,
+                                        info_hash,
+                                        total_pieces,
+                                        piece_length,
+                                        total_torrent_size,
+                                        &piece_hashes,
+                                        &piece_allocator,
+                                        &file_map,
+                                        &torrent_state,
+                                        &self.stats_registry,
+                                        have_tx.clone(),
+                                    );
+                                }
                                 while let Some(peer) = peer_pool.pop_front() {
                                     match Self::spawn_worker_if_new(
                                         &mut worker_set,
@@ -888,6 +934,7 @@ impl TorrentTask {
                         TorrentCommand::Recheck => {
                             info!(target: "major", "Force recheck initiated for: {}", info_hash_sha1);
                             worker_set.shutdown().await;
+                            webseed_set.shutdown().await;
                             piece_allocator.lock().await.reset_in_progress();
                             connected_peers.lock().await.clear();
                             self.stats_registry.clear_peers(&info_hash_sha1);
@@ -966,6 +1013,26 @@ impl TorrentTask {
 
                             let can_run = has_download_slot || recheck.completed_pieces == total_pieces;
                             if !is_paused && can_run {
+                                if has_download_slot
+                                    && recheck.completed_pieces < total_pieces
+                                    && !webseed_urls.is_empty()
+                                {
+                                    Self::spawn_webseed_workers(
+                                        &mut webseed_set,
+                                        &webseed_urls,
+                                        &webseed_layout,
+                                        info_hash,
+                                        total_pieces,
+                                        piece_length,
+                                        total_torrent_size,
+                                        &piece_hashes,
+                                        &piece_allocator,
+                                        &file_map,
+                                        &torrent_state,
+                                        &self.stats_registry,
+                                        have_tx.clone(),
+                                    );
+                                }
                                 while let Some(peer) = peer_pool.pop_front() {
                                     match Self::spawn_worker_if_new(
                                         &mut worker_set,
@@ -1133,6 +1200,24 @@ impl TorrentTask {
                             alloc.remaining_bytes(piece_length, total_torrent_size),
                         )
                     };
+
+                    if !webseed_urls.is_empty() {
+                        Self::spawn_webseed_workers(
+                            &mut webseed_set,
+                            &webseed_urls,
+                            &webseed_layout,
+                            info_hash,
+                            total_pieces,
+                            piece_length,
+                            total_torrent_size,
+                            &piece_hashes,
+                            &piece_allocator,
+                            &file_map,
+                            &torrent_state,
+                            &self.stats_registry,
+                            have_tx.clone(),
+                        );
+                    }
 
                     while let Some(peer) = peer_pool.pop_front() {
                         match Self::spawn_worker_if_new(
@@ -1410,11 +1495,14 @@ impl TorrentTask {
                         }
                     }
                 }
+                // Reap completed/retired BEP 0019 WebSeed workers
+                Some(_) = webseed_set.join_next(), if !webseed_set.is_empty() => {}
             }
         }
 
         is_active_for_announce.store(false, std::sync::atomic::Ordering::Relaxed);
         re_announce_handle.abort();
+        webseed_set.shutdown().await;
         self.inbound_registry.unregister(&info_hash).await;
         self.queue_manager.release_download_slot(&info_hash).await;
 
@@ -1915,5 +2003,49 @@ impl TorrentTask {
             "DHT: Announced to {} nodes, discovered {} peers for {}",
             announced_nodes, peer_count, info_hash_sha1
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_webseed_workers(
+        webseed_set: &mut JoinSet<()>,
+        webseed_urls: &[String],
+        webseed_layout: &Arc<WebSeedLayout>,
+        info_hash: [u8; 20],
+        total_pieces: usize,
+        piece_length: u32,
+        total_torrent_size: u64,
+        piece_hashes: &Arc<Vec<u8>>,
+        piece_allocator: &Arc<Mutex<PieceAllocator>>,
+        file_map: &Arc<RwLock<Vec<FileRegion>>>,
+        torrent_state: &Arc<Mutex<TorrentState>>,
+        stats_registry: &Arc<StatsRegistry>,
+        have_tx: broadcast::Sender<u32>,
+    ) {
+        if !webseed_set.is_empty() || webseed_urls.is_empty() || total_pieces == 0 {
+            return;
+        }
+
+        let concurrency_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_WEBSEEDS_PER_TORRENT));
+        for (seed_index, base_url) in webseed_urls.iter().enumerate() {
+            let worker = WebSeedWorker {
+                seed_index,
+                base_url: base_url.clone(),
+                info_hash,
+                layout: Arc::clone(webseed_layout),
+                total_pieces,
+                piece_length,
+                total_torrent_size,
+                piece_hashes: Arc::clone(piece_hashes),
+                piece_allocator: Arc::clone(piece_allocator),
+                file_map: Arc::clone(file_map),
+                torrent_state: Arc::clone(torrent_state),
+                stats_registry: Arc::clone(stats_registry),
+                have_tx: have_tx.clone(),
+                concurrency_sem: Arc::clone(&concurrency_sem),
+            };
+            webseed_set.spawn(async move {
+                worker.start().await;
+            });
+        }
     }
 }

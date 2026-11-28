@@ -285,7 +285,7 @@ impl Drop for InflightGuard {
 
 /// Pure-async, zero-OS-thread dual-stack DNS resolver (`A` + `AAAA`) with request coalescing
 /// and positive/negative caching. Returns all resolved `SocketAddr`s (IPv4 ordered before IPv6).
-pub(crate) async fn resolve_host_ports(
+pub async fn resolve_host_ports(
     host: &str,
     port: u16,
 ) -> Result<Vec<SocketAddr>, TrackerError> {

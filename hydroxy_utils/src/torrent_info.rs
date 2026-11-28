@@ -250,19 +250,31 @@ impl TorrentInfo {
             _ => None,
         };
 
-        // extracting url-list
+        // extracting url-list (BEP 0019: single string, list of strings, or nested tiered lists)
         let mut url_list: Vec<String> = Vec::new();
+        let mut push_clean_url = |bytes: &[u8]| {
+            let trimmed = String::from_utf8_lossy(bytes).trim().to_string();
+            if !trimmed.is_empty() && !url_list.contains(&trimmed) {
+                url_list.push(trimmed);
+            }
+        };
         match root_dictionary.get(&b"url-list"[..]) {
             Some(BencodedValue::List(list)) => {
-                for url in list {
-                    if let BencodedValue::String(bytes) = url {
-                        url_list.push(String::from_utf8_lossy(bytes).to_string());
+                for item in list {
+                    match item {
+                        BencodedValue::String(bytes) => push_clean_url(bytes),
+                        BencodedValue::List(tier) => {
+                            for nested in tier {
+                                if let BencodedValue::String(bytes) = nested {
+                                    push_clean_url(bytes);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
-            Some(BencodedValue::String(bytes)) => {
-                url_list.push(String::from_utf8_lossy(bytes).to_string());
-            }
+            Some(BencodedValue::String(bytes)) => push_clean_url(bytes),
             _ => {}
         }
 
@@ -297,5 +309,64 @@ impl OtherInfos {
             .iter()
             .map(|byte| format!("{:02x}", byte))
             .collect::<String>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn sample_info_dict() -> BencodedValue {
+        let mut info = BTreeMap::new();
+        info.insert(b"length".to_vec(), BencodedValue::Integer(16));
+        info.insert(
+            b"name".to_vec(),
+            BencodedValue::String(b"ubuntu.iso".to_vec()),
+        );
+        info.insert(b"piece length".to_vec(), BencodedValue::Integer(16));
+        info.insert(b"pieces".to_vec(), BencodedValue::String(vec![0xAA; 20]));
+        BencodedValue::Dictionary(info)
+    }
+
+    #[test]
+    fn test_bep0019_url_list_single_string_and_list_variants() {
+        // 1. Single string `url-list` (GetRight / mktorrent single-webseed convention)
+        let mut root1 = BTreeMap::new();
+        root1.insert(b"info".to_vec(), sample_info_dict());
+        root1.insert(
+            b"url-list".to_vec(),
+            BencodedValue::String(b"  https://releases.ubuntu.com/24.04/ubuntu.iso  ".to_vec()),
+        );
+        let parsed1 =
+            TorrentInfo::parse_torrent_file(encode(&BencodedValue::Dictionary(root1))).unwrap();
+        assert_eq!(
+            parsed1.url_list,
+            vec!["https://releases.ubuntu.com/24.04/ubuntu.iso"]
+        );
+
+        // 2. List + deduplication + nested list `url-list`
+        let mut root2 = BTreeMap::new();
+        root2.insert(b"info".to_vec(), sample_info_dict());
+        root2.insert(
+            b"url-list".to_vec(),
+            BencodedValue::List(vec![
+                BencodedValue::String(b"https://mirror1.example.com/pub/".to_vec()),
+                BencodedValue::String(b"".to_vec()),
+                BencodedValue::String(b"https://mirror1.example.com/pub/".to_vec()),
+                BencodedValue::List(vec![BencodedValue::String(
+                    b"http://mirror2.example.com/pub/".to_vec(),
+                )]),
+            ]),
+        );
+        let parsed2 =
+            TorrentInfo::parse_torrent_file(encode(&BencodedValue::Dictionary(root2))).unwrap();
+        assert_eq!(
+            parsed2.url_list,
+            vec![
+                "https://mirror1.example.com/pub/",
+                "http://mirror2.example.com/pub/"
+            ]
+        );
     }
 }

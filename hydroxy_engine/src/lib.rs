@@ -24,6 +24,7 @@ pub mod queue;
 pub mod remote;
 pub mod stats;
 mod torrent_task;
+pub mod webseed;
 
 use crate::control::TorrentControlRegistry;
 

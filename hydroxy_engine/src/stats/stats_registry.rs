@@ -87,6 +87,22 @@ impl StatsRegistry {
         }
     }
 
+    /// Registers an active BEP 0019 HTTP/HTTPS WebSeed endpoint in peer stats (`100%` progress, excluded from PEX).
+    pub fn webseed_connected(
+        &self,
+        info_hash: &str,
+        ip_addr: IpAddr,
+        port: u16,
+        client_id: String,
+    ) {
+        if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
+            torrent
+                .peers_stats
+                .entry((ip_addr, port))
+                .or_insert_with(|| PeerStats::new_webseed(ip_addr, port, client_id));
+        }
+    }
+
     /// Called when BEP 10 extended handshake advertises explicit client name/version ("v" key).
     pub fn update_peer_client(&self, info_hash: &str, ip: IpAddr, port: u16, client_id: String) {
         if let Some(mut torrent) = self.torrents.get_mut(info_hash) {
@@ -197,11 +213,19 @@ impl StatsRegistry {
             .collect()
     }
 
-    /// Returns (IpAddr, port) pairs of peers that have completed a handshake for dual-stack PEX advertisement.
+    /// Returns (IpAddr, port) pairs of P2P peers that have completed a handshake for dual-stack PEX advertisement.
+    /// Excludes BEP 0019 HTTP WebSeed endpoints so web servers are never advertised over `ut_pex`.
     pub fn active_peer_endpoints(&self, info_hash: &str) -> Vec<(IpAddr, u16)> {
         self.torrents
             .get(info_hash)
-            .map(|torrent| torrent.peers_stats.keys().copied().collect())
+            .map(|torrent| {
+                torrent
+                    .peers_stats
+                    .iter()
+                    .filter(|(_, p)| !p.is_webseed)
+                    .map(|(&k, _)| k)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

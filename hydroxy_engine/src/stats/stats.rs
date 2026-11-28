@@ -20,6 +20,7 @@ pub struct PeerStats {
     pub ip_addr: IpAddr,
     pub port: u16,
     pub client_id: String,
+    pub is_webseed: bool,
     pub state: PeerConnectionState,
     pub downloaded_bytes: u64,
     pub uploaded_bytes: u64,
@@ -33,11 +34,22 @@ pub struct PeerStats {
 
 impl PeerStats {
     pub fn new(ip_addr: IpAddr, port: u16, client_id: String) -> Self {
+        Self::new_with_kind(ip_addr, port, client_id, false)
+    }
+
+    pub fn new_webseed(ip_addr: IpAddr, port: u16, client_id: String) -> Self {
+        let mut stats = Self::new_with_kind(ip_addr, port, client_id, true);
+        stats.progress = 100.0;
+        stats
+    }
+
+    fn new_with_kind(ip_addr: IpAddr, port: u16, client_id: String, is_webseed: bool) -> Self {
         let now = Instant::now();
         Self {
             ip_addr,
             port,
             client_id,
+            is_webseed,
             state: PeerConnectionState::Connected,
             downloaded_bytes: 0,
             uploaded_bytes: 0,
